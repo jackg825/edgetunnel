@@ -29,6 +29,23 @@
 ---
 
 ## 💡 快速部署
+
+### 🔒 本 Fork 的 Mac mini 家庭出口設定
+
+公開 repository 只保留 [`wrangler.example.toml`](./wrangler.example.toml)
+範例，不包含正式網域、私網 IP、Cloudflare Tunnel/KV ID、UUID、
+管理密碼或訂閱 token。部署前先建立本機設定：
+
+```sh
+cp wrangler.example.toml wrangler.toml
+```
+
+將 `wrangler.toml` 的保留範例值替換成實際資源；這個檔案已被 Git
+忽略。`ADMIN`、`UUID` 等秘密使用 `wrangler secret put <NAME>`，不要
+寫入 TOML、README 或 commit。Mac mini 家庭出口步驟與安全結論請參考
+[`deploy/macmini/README.md`](./deploy/macmini/README.md) 與
+[`deploy/macmini/LESSONS_LEARNED.md`](./deploy/macmini/LESSONS_LEARNED.md)。
+
 >[!TIP]
 > 📖 **详尽图文教程**：[edgetunnel 部署指南](https://cmliussss.com/p/edt2/)
 

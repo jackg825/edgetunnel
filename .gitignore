@@ -18,6 +18,8 @@ GRAINTCP_*
 # Cloudflare Workers
 .wrangler/
 wrangler-install.log
+wrangler.toml
+.dev.vars*
 
 # IDE
 .vscode/

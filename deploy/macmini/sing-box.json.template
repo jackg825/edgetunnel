@@ -1,0 +1,30 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "home-egress-in",
+      "listen": "127.0.0.1",
+      "listen_port": 19090,
+      "users": [
+        {
+          "name": "edgetunnel",
+          "password": "replace-during-install"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "direct"
+  }
+}
