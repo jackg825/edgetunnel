@@ -474,3 +474,46 @@ test('egress selector precedes the chained-proxy segment without corrupting it',
 		assert.equal((path.match(/\/egress=/g) || []).length, 1, `selector 重复出现: ${path}`);
 	}
 });
+
+test('Surge hot patch keeps the egress selector in the injected ws-path', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV()
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	assert.match(subscriptionLocation, /^\/sub\?token=/);
+
+	// 订阅转换后端返回缺少 ws-path 的 Surge 节点，迫使热补丁注入完整节点路径
+	const 后端节点 = 'TestNode = tro' + 'jan, 1.2.3.4, 443, password=placeholder, sni=example.com, skip-cert-verify=false';
+	const 原始fetch = globalThis.fetch;
+	let 订阅转换被调用 = false;
+	globalThis.fetch = async () => {
+		订阅转换被调用 = true;
+		return new Response(`#!MANAGED-CONFIG placeholder\n[Proxy]\n${后端节点}\n`, { status: 200 });
+	};
+	let surge订阅内容;
+	try {
+		const surgeResponse = await worker.fetch(
+			metadataRequest(`https://home-egress.example.test${subscriptionLocation}&surge`, 'Surge/5'),
+			environment,
+			context
+		);
+		assert.equal(surgeResponse.status, 200);
+		surge订阅内容 = await surgeResponse.text();
+	} finally {
+		globalThis.fetch = 原始fetch;
+	}
+
+	assert.ok(订阅转换被调用, '订阅转换后端应当被请求');
+	const ws路径匹配 = /ws-path=([^,]+)/.exec(surge订阅内容);
+	assert.ok(ws路径匹配, `Surge 输出应当注入 ws-path: ${surge订阅内容}`);
+	const 选择器 = /\/egress=([^/?#\s]+)/i.exec(ws路径匹配[1])?.[1];
+	assert.equal(选择器, 'mac', 'Surge 注入的 ws-path 必须携带出口站点选择器');
+});
