@@ -51,9 +51,6 @@ route 的 HA，不能形成可選擇的另一個家庭出口。
    npx wrangler secret put EGRESS_NAS_RELAY_PASSWORD
    ```
 
-   也可登入 Worker 管理後台的 `/admin/egress`，在瀏覽器本地產生密碼與設定
-   片段。頁面不保存密碼，也不具備 Cloudflare 帳號管理權限。
-
 5. 在忽略的 `wrangler.toml` 加入站點與 binding；設定只引用 secret 名稱，不放值：
 
    ```toml
