@@ -213,7 +213,7 @@ test('selects each configured egress site without contacting the other binding',
 		requestWithBody(
 			vlessPacket(),
 			() => { publicCalls++; throw new Error('public fallback used') },
-			'https://home-egress.example.test/tunnel?egress=nas'
+			'https://home-egress.example.test/egress=nas/tunnel'
 		),
 		multiSiteEnvironment(
 			address => { macCalls.push(address); return fakeSocket(writes) },
@@ -254,7 +254,7 @@ test('fails closed on an unknown egress selector', async () => {
 			requestWithBody(
 				vlessPacket(),
 				() => { publicCalls++; throw new Error('public fallback used') },
-				'https://home-egress.example.test/tunnel?egress=missing'
+				'https://home-egress.example.test/egress=missing/tunnel'
 			),
 			multiSiteEnvironment(
 				() => { macCalls++; throw new Error('Mac binding used') },
@@ -281,7 +281,7 @@ test('fails closed when the selected site binding is missing', async () => {
 			requestWithBody(
 				vlessPacket(),
 				() => { publicCalls++; throw new Error('public fallback used') },
-				'https://home-egress.example.test/tunnel?egress=nas'
+				'https://home-egress.example.test/egress=nas/tunnel'
 			),
 			environment,
 			{ waitUntil() { } }
@@ -304,7 +304,7 @@ test('fails closed when the selected site relay secret is missing', async () => 
 			requestWithBody(
 				vlessPacket(),
 				() => { publicCalls++; throw new Error('public fallback used') },
-				'https://home-egress.example.test/tunnel?egress=nas'
+				'https://home-egress.example.test/egress=nas/tunnel'
 			),
 			environment,
 			{ waitUntil() { } }
@@ -323,7 +323,7 @@ test('re-authenticates Trojan TCP with the selected site relay secret', async ()
 		requestWithBody(
 			trojanPacket({ payload }),
 			() => { throw new Error('public fallback used') },
-			'https://home-egress.example.test/tunnel?egress=nas'
+			'https://home-egress.example.test/egress=nas/tunnel'
 		),
 		multiSiteEnvironment(
 			() => { throw new Error('Mac fallback used') },
@@ -344,7 +344,7 @@ test('re-authenticates Trojan UDP with the selected site relay secret', async ()
 		requestWithBody(
 			trojanPacket({ command: 3, port: 53, payload }),
 			() => { throw new Error('public fallback used') },
-			'https://home-egress.example.test/tunnel?egress=nas'
+			'https://home-egress.example.test/egress=nas/tunnel'
 		),
 		multiSiteEnvironment(
 			() => { throw new Error('Mac fallback used') },
@@ -364,7 +364,7 @@ test('does not fall back to another site when the selected relay is unavailable'
 		requestWithBody(
 			vlessPacket(),
 			() => { publicCalls++; throw new Error('public fallback used') },
-			'https://home-egress.example.test/tunnel?egress=nas'
+			'https://home-egress.example.test/egress=nas/tunnel'
 		),
 		multiSiteEnvironment(
 			() => { macCalls++; throw new Error('Mac fallback used') },
@@ -417,9 +417,11 @@ test('subscription emits one explicitly selected node per configured egress site
 	const siteCounts = { mac: 0, nas: 0 };
 	for (const link of links) {
 		const node = new URL(link);
-		assert.equal(node.searchParams.get('type'), 'ws');
-		const path = node.searchParams.get('path');
-		const site = new URL(path, 'https://worker.invalid').searchParams.get('egress');
+		// gRPC 会丢弃 serviceName 中 '?' 之后的内容，路径片段形式的选择器必须存活
+		assert.equal(node.searchParams.get('type'), 'grpc');
+		const path = node.searchParams.get('serviceName');
+		assert.doesNotMatch(path, /\?/, 'gRPC serviceName 不应残留查询串');
+		const site = /\/egress=([^/?#\s]+)/i.exec(path)?.[1];
 		if (site === 'mac' || site === 'nas') siteCounts[site]++;
 		const name = decodeURIComponent(node.hash.slice(1));
 		if (site === 'mac') assert.match(name, /^Taiwan Mac mini · /);
@@ -428,4 +430,47 @@ test('subscription emits one explicitly selected node per configured egress site
 	}
 	assert.ok(siteCounts.mac > 0);
 	assert.equal(siteCounts.mac, siteCounts.nas);
+});
+
+test('egress selector precedes the chained-proxy segment without corrupting it', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV({ 'ADD.txt': '1.2.3.4:443#TestNode $socks5://user:pass@10.0.0.1:1080' })
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	const initialSubscription = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	await initialSubscription.text();
+	// 关闭随机IP，改用 ADD.txt 中带 $socks5:// 备注的条目触发链式代理路径
+	const storedConfig = JSON.parse(await environment.KV.get('config.json'));
+	storedConfig.优选订阅生成.本地IP库.随机IP = false;
+	await environment.KV.put('config.json', JSON.stringify(storedConfig));
+
+	const subscriptionResponse = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(subscriptionResponse.status, 200);
+	const decoded = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8');
+	const 链式节点 = decoded.trim().split(/\r?\n/)
+		.map(link => new URL(link).searchParams.get('path'))
+		.filter(path => path && path.includes('/video/'));
+
+	assert.ok(链式节点.length > 0, `订阅应当产出链式代理节点: ${decoded}`);
+	for (const path of 链式节点) {
+		// selector 必须在最前：/video/(.+)$ 会贪婪吃到路径结尾，接在后面会吞掉 base64
+		assert.match(path, /^\/egress=(?:mac|nas)\/video\/[^/?#]+/, `链式代理段被 selector 破坏: ${path}`);
+		assert.equal((path.match(/\/egress=/g) || []).length, 1, `selector 重复出现: ${path}`);
+	}
 });

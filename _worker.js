@@ -49,22 +49,27 @@ function 获取默认出口站点(出口站点列表, env) {
 	return 默认站点;
 }
 
-function 附加出口站点到路径(path, siteID) {
+// 出口选择器写在路径片段而非查询参数，gRPC 的 serviceName 会丢弃 '?' 之后的内容。
+// 必须置于路径最前：/video/(.+)$ 与 /trojan=([^?#\s]+) 都会贪婪吃到路径结尾。
+const 出口站点路径正则 = /\/egress=([^/?#\s]+)/i;
+
+function 附加出口站点到路径(path, 出口站点) {
+	if (!出口站点) return path;
 	const 路径 = String(path || '/');
-	const 锚点索引 = 路径.indexOf('#');
-	const 锚点 = 锚点索引 === -1 ? '' : 路径.slice(锚点索引);
-	const 路径主体 = 锚点索引 === -1 ? 路径 : 路径.slice(0, 锚点索引);
-	const 查询索引 = 路径主体.indexOf('?');
-	const 基础路径 = 查询索引 === -1 ? 路径主体 : 路径主体.slice(0, 查询索引);
-	const 查询参数 = new URLSearchParams(查询索引 === -1 ? '' : 路径主体.slice(查询索引 + 1));
-	查询参数.set('egress', siteID);
-	return `${基础路径 || '/'}?${查询参数.toString()}${锚点}`;
+	const 分隔索引 = 路径.search(/[?#]/);
+	const 路径主体 = (分隔索引 === -1 ? 路径 : 路径.slice(0, 分隔索引)).replace(/\/egress=[^/?#\s]*/gi, '');
+	const 其余部分 = 分隔索引 === -1 ? '' : 路径.slice(分隔索引);
+	return `/egress=${出口站点.id}${路径主体 === '/' ? '' : 路径主体}${其余部分}`;
+}
+
+function 读取路径出口站点ID(pathname) {
+	return (出口站点路径正则.exec(String(pathname || ''))?.[1] || '').trim().toLowerCase();
 }
 
 function 应用家庭出口配置(反代上下文, env, url) {
 	const 出口站点列表 = 读取出口站点配置(env);
 	if (出口站点列表.length === 0) return 反代上下文;
-	const 请求站点ID = String(url?.searchParams?.get('egress') || '').trim().toLowerCase();
+	const 请求站点ID = 读取路径出口站点ID(url?.pathname);
 	const 出口站点 = 请求站点ID
 		? 出口站点列表.find(站点 => 站点.id === 请求站点ID)
 		: 获取默认出口站点(出口站点列表, env);
@@ -520,7 +525,7 @@ export default {
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
 								return 订阅出口站点列表.map(出口站点 => {
-									let 出口节点路径 = 出口站点 ? 附加出口站点到路径(完整节点路径, 出口站点.id) : 完整节点路径;
+									let 出口节点路径 = 附加出口站点到路径(完整节点路径, 出口站点);
 									const 出口节点备注 = 出口站点 ? `${出口站点.name} · ${节点备注}` : 节点备注;
 									let 出口节点端口 = 节点端口;
 									if (协议类型 === 'ss' && !作为优选订阅生成器) {
@@ -5377,7 +5382,6 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	if (!config_JSON.订阅转换配置.SORT) config_JSON.订阅转换配置.SORT = false;
 	if (家庭出口已启用) {
 		config_JSON.协议类型 = 家庭入站协议;
-		config_JSON.传输协议 = "ws";
 		config_JSON.订阅转换配置.UDP = 家庭入站协议 === 'trojan';
 	}
 	if (!config_JSON.gRPCUserAgent) config_JSON.gRPCUserAgent = UA;
@@ -5451,7 +5455,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 	const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 	const 默认出口站点 = 获取默认出口站点(出口站点列表, env);
-	const 默认出口节点路径 = 默认出口站点 ? 附加出口站点到路径(config_JSON.完整节点路径, 默认出口站点.id) : config_JSON.完整节点路径;
+	const 默认出口节点路径 = 附加出口站点到路径(config_JSON.完整节点路径, 默认出口站点);
 	const 传输路径参数值 = 获取传输路径参数值(config_JSON, 默认出口节点路径);
 	const 默认节点名称 = 默认出口站点 ? `${默认出口站点.name} · ${config_JSON.优选订阅生成.SUBNAME}` : config_JSON.优选订阅生成.SUBNAME;
 	config_JSON.LINK = config_JSON.协议类型 === 'ss'

@@ -19,7 +19,7 @@ if [ -n "$SITE_ID" ]; then
 	case "$SITE_ID" in
 		*[!a-z0-9_-]*|'') printf '%s\n' "HOME_EGRESS_SITE_ID contains invalid characters" >&2; exit 1 ;;
 	esac
-	WORKER_PATH="/?egress=$SITE_ID"
+	WORKER_PATH="/egress=$SITE_ID"
 fi
 
 WORKER_UUID="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w)"

@@ -139,8 +139,8 @@ docker compose -f deploy/nas/runtime/compose.yaml logs --tail=100
 ## 4. 驗收與 fail closed
 
 1. Owner 確認只有 NAS Tunnel Healthy，private route 恰為 relay `/32`。
-2. 更新 Shadowrocket 訂閱；家庭出口啟用時節點固定採 VLESS/WebSocket，每個站點的
-   path 都帶自己的 `egress=<site-id>` selector。
+2. 更新 Shadowrocket 訂閱；每個站點的 path 都帶自己的 `/egress=<site-id>`
+   selector（路徑片段形式，WebSocket、gRPC、XHTTP 皆可保留）。
 3. 選 NAS 節點開啟真實 HTTPS 網站，確認 public IP 是 NAS 所在地。
 4. 停止 NAS relay：
 

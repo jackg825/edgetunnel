@@ -86,11 +86,13 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
   必須保留相同的目的位址轉送、驗證與 fail-closed 語意。
 - `EGRESS_SITES` 只保存站點 ID、名稱、binding 名稱、私網 relay 位址及
   `secret_env` 名稱，不保存 secret 值。訂閱會為每個 ingress route 產生各站點
-  版本，並把 `egress=<site-id>` 放入傳輸 path。
+  版本，並把 `/egress=<site-id>` 放入傳輸 path。
 - `DEFAULT_EGRESS` 只處理沒有 selector 的舊客戶端，不是健康檢查或自動備援。
   selector 不存在、binding 缺失或 relay 失敗時均直接終止連線。
-- 多站點訂閱固定使用 WebSocket。gRPC 的 `serviceName` 會丟棄 query string，若把
-  `egress=<site-id>` 放在 query 會讓所有節點誤用 `DEFAULT_EGRESS`。
+- selector 必須是**路徑片段**而非 query 參數：gRPC 的 `serviceName` 會丟棄 `?`
+  之後的內容，放在 query 會讓 gRPC 節點靜默改用 `DEFAULT_EGRESS`。也必須置於
+  路徑**最前**，因為 `/video/(.+)$`（鏈式代理）與 `/trojan=([^?#\s]+)` 都會貪婪
+  匹配到路徑結尾，接在後面會被一併吃掉。
 - NAS Docker 端固定 relay `.2` 與 cloudflared `.3`，避免動態 IP allocator 搶占
   private route 指向的位址。只 route relay `/32`，不要 route 整個 Docker subnet。
 - 不受信任站點的 relay 必須先解析 domain，再套用 private/reserved IP 規則；只檢查

@@ -94,10 +94,11 @@ HOME_EGRESS_SITE_ID=mac \
 The Worker KV binding enables its subscription endpoint. Egress mode emits
 VLESS-over-WebSocket-over-TLS nodes on the public side. Inside Cloudflare, the
 Worker translates VLESS TCP requests to the private Trojan relay at the site
-selected by the node's `egress` query parameter. VLESS UDP is deliberately not
-advertised so all supported traffic remains fail-closed through that site.
-Even if an older KV configuration selects gRPC or XHTTP, multi-site egress
-subscriptions force WebSocket because its path preserves the required selector.
+selected by the node's `/egress=<site-id>` path segment. VLESS UDP is
+deliberately not advertised so all supported traffic remains fail-closed
+through that site. The selector is a path segment rather than a query
+parameter so it survives every transport, including gRPC, whose `serviceName`
+discards everything after `?`.
 
 The production Shadowrocket profile uses VLESS over WebSocket with certificate
 verification, a Chrome fingerprint, randomized paths, ECH via Ali DoH and
