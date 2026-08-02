@@ -1,6 +1,4 @@
-import { egressAdminHeaders, injectEgressAdminShortcut, renderEgressAdminPage } from './admin-egress.js';
-
-const Version = '2026-08-02 13:00:41';
+const Version = '2026-08-02 13:23:51';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
@@ -70,21 +68,6 @@ function 读取路径出口站点ID(pathname) {
 
 function 附加出口站点到备注(备注, 出口站点) {
 	return 出口站点 ? `${出口站点.name} · ${备注}` : 备注;
-}
-
-function 获取出口站点管理摘要(env) {
-	return 读取出口站点配置(env).map(站点 => {
-		const 站点密钥 = 站点.secretEnv ? String(env[站点.secretEnv] || '') : '';
-		return {
-			id: 站点.id,
-			name: 站点.name,
-			binding: 站点.binding,
-			address: 站点.address,
-			secretEnv: 站点.secretEnv,
-			bindingConfigured: Boolean(env[站点.binding] && typeof env[站点.binding].connect === 'function'),
-			secretConfigured: Boolean(站点.secretEnv && 站点密钥.length >= 16 && 站点密钥.length <= 128 && !/[\r\n]/.test(站点密钥))
-		};
-	});
 }
 
 function 应用家庭出口配置(反代上下文, env, url, userID) {
@@ -211,10 +194,7 @@ export default {
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
 					// 没有cookie或cookie错误，跳转到/login页面
 					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-					if (访问路径 === 'admin/egress') {// 出口站点接入资料仅在浏览器本地生成
-						if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
-						return new Response(renderEgressAdminPage(获取出口站点管理摘要(env)), { status: 200, headers: egressAdminHeaders() });
-					} else if (访问路径 === 'admin/log.json') {// 读取日志内容
+					if (访问路径 === 'admin/log.json') {// 读取日志内容
 						const 读取日志内容 = await env.KV.get('log.json') || '[]';
 						return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					} else if (区分大小写访问路径 === 'admin/getCloudflareUsage') {// 查询请求量
@@ -401,7 +381,7 @@ export default {
 					}
 
 					ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-					return injectEgressAdminShortcut(await fetch(Pages静态页面 + '/admin' + url.search));
+					return fetch(Pages静态页面 + '/admin' + url.search);
 				} else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
 					const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
 					响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
