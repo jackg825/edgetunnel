@@ -166,6 +166,16 @@ Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本�
 1. 修改`ADMIN`或`KEY`变量的值，可以随机修改 **订阅地址里的TOKEN** 和 **用于节点验证的UUID**
 2. 设置`UUID`变量可以强制固定 **订阅地址里的TOKEN** 和 **用于节点验证的UUID**，注意必须是**UUIDv4**标准格式，否则会导致节点无法使用。
 
+### 出口站點接入頁面
+
+登入管理後台後可從右下角進入 `/admin/egress`。該頁使用瀏覽器 Web Crypto
+產生 256-bit relay password，並建立 `EGRESS_SITES` 站點項目、Wrangler VPC
+binding 與 NAS 指令。密碼只存在目前瀏覽器頁面，不會傳回 Worker、寫入 KV 或
+放入產生的 shell command；重新整理後即消失。
+
+Worker Secret、Tunnel 與 VPC binding 仍由 Cloudflare owner 透過 Dashboard／
+Wrangler 建立。不要為了讓後台代辦這些動作而把 Cloudflare API token 放進 Worker。
+
 本工具支持通过 **PATH路径** 动态切换底层代理方案：
 
 - 指定 `PROXYIP` 案例
