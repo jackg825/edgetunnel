@@ -89,6 +89,12 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
   版本，並把 `egress=<site-id>` 放入傳輸 path。
 - `DEFAULT_EGRESS` 只處理沒有 selector 的舊客戶端，不是健康檢查或自動備援。
   selector 不存在、binding 缺失或 relay 失敗時均直接終止連線。
+- 多站點訂閱固定使用 WebSocket。gRPC 的 `serviceName` 會丟棄 query string，若把
+  `egress=<site-id>` 放在 query 會讓所有節點誤用 `DEFAULT_EGRESS`。
+- NAS Docker 端固定 relay `.2` 與 cloudflared `.3`，避免動態 IP allocator 搶占
+  private route 指向的位址。只 route relay `/32`，不要 route 整個 Docker subnet。
+- 不受信任站點的 relay 必須先解析 domain，再套用 private/reserved IP 規則；只檢查
+  原始目的 IP 會讓指向 LAN 或 metadata address 的 domain 繞過限制。
 
 ## KV、訂閱與外部依賴
 

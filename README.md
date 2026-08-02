@@ -148,7 +148,7 @@ Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本�
 | **UUID** | ❌ | `90cd4a77-141a-43c9-991b-08263cfe9c10` | 强制固定UUID，只支持**UUIDv4**标准格式 |
 | **EGRESS_SITES** | ❌ | JSON array | 多地點出口的站點 ID、名稱、VPC binding、私網 relay 位址與站點 secret binding 名稱；不直接包含 secret 值 |
 | **DEFAULT_EGRESS** | ❌ | `mac` | 未帶 `egress` selector 的舊節點固定使用哪個站點；不會作自動備援 |
-| **EGRESS_PROTOCOL** | ❌ | `vless` | 家庭出口模式的公開訂閱協議；目前建議 VLESS/TCP |
+| **EGRESS_PROTOCOL** | ❌ | `vless` | 家庭出口模式的公開訂閱協議；多站點訂閱固定使用 VLESS/WebSocket/TLS，確保每個節點保留出口 selector |
 | **PROXYIP** | ❌ | `proxyip.cmliussss.net:443` | 全局自定义反代 IP  |
 | **URL** | ❌ | `https://cloudflare-error-page-3th.pages.dev` | 默认主页伪装地址（可填写网页 URL 或 `1101`） |
 | **GO2SOCKS5** | ❌ | `blog.cmliussss.com`,`*.ip111.cn`,`*google.com` | 强制走 SOCKS5 的名单 (`*` 为全局，域名用逗号分隔) |

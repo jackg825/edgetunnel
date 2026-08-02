@@ -13,7 +13,7 @@ Cloudflare 帳號、Dashboard 權限、Wrangler、API token 或 `cert.pem`；他
 
 1. 建立一個 remotely-managed Named Tunnel。每一位朋友／每一個地點使用不同
    Tunnel，不把任何 Tunnel token 跨站共用。
-2. 為此站點分配未使用的 `FRIEND_SITE_INDEX`（1–254）。站點 `N` 的 Docker
+2. 為此站點分配未使用的 `EGRESS_SITE_INDEX`（1–254）。站點 `N` 的 Docker
    subnet 是 `172.30.N.0/29`，relay 是 `172.30.N.2:19090`。
 3. 只建立 relay 的 `/32` private route，不宣告朋友 LAN、預設路由或其他 subnet。
 4. 建立獨立 Workers VPC binding，以及 64 字元隨機 relay secret：
@@ -47,26 +47,27 @@ URL/token 或其他站點的 relay secret。`cert.pem` 可建立、刪除與管�
 
 ## 朋友端安裝
 
-需求：Linux NAS／主機、Docker Engine 與 Docker Compose plugin。這個 bundle
-會安裝（拉取）固定版本的官方 `cloudflared` 與 sing-box container；不執行
+需求：`amd64`／`arm64` Linux NAS 或主機、Docker Engine 與 Docker Compose。共用的
+[`deploy/nas` bundle](../nas/README.md) 會安裝（拉取）固定版本的官方
+`cloudflared` 與 sing-box container；不執行
 `cloudflared tunnel login`，也不呼叫任何 Cloudflare 管理 API。
 
-1. 將這個 repository 或僅 `deploy/friend` 目錄交給朋友。
+1. 將這個 repository 的 `deploy/nas` 目錄與本文件交給朋友。
 2. 朋友從互動式 terminal 執行，其中 `42` 換成你分配的 index：
 
    ```sh
-   FRIEND_SITE_INDEX=42 ./deploy/friend/prepare.sh
+   EGRESS_SITE_INDEX=42 ./deploy/nas/prepare.sh
    ```
 
 3. Script 以隱藏輸入讀取兩個 credential，保存於被 Git 忽略且 mode `0600` 的
-   `deploy/friend/runtime/`，不把 token 放在 CLI argument、shell history、Compose
+   `deploy/nas/runtime/`，不把 token 放在 CLI argument、shell history、Compose
    environment 或 process list。Cloudflared 以 `--token-file` 讀取 token。
 4. Script 會驗證 Compose、拉取 pinned images，並執行 `sing-box check`。確認沒有
    錯誤後啟動：
 
    ```sh
-   docker compose -f deploy/friend/runtime/compose.yaml up -d
-   docker compose -f deploy/friend/runtime/compose.yaml ps
+   docker compose -f deploy/nas/runtime/compose.yaml up -d
+   docker compose -f deploy/nas/runtime/compose.yaml ps
    ```
 
 兩個 container 位於專用 Docker bridge。Relay 沒有 publish 到 NAS host 或朋友
@@ -95,7 +96,7 @@ Relay 本身另需一般 Internet 出口流量。
 5. 重新啟動並確認恢復：
 
    ```sh
-   docker compose -f deploy/friend/runtime/compose.yaml restart sing-box
+   docker compose -f deploy/nas/runtime/compose.yaml restart sing-box
    ```
 
 ## 撤銷與離場
@@ -105,10 +106,10 @@ route。接著在 Cloudflare Dashboard 輪替 Tunnel token，必要時強制斷�
 最後刪除 Tunnel 與站點 relay secret。朋友端執行：
 
 ```sh
-docker compose -f deploy/friend/runtime/compose.yaml down
+docker compose -f deploy/nas/runtime/compose.yaml down
 ```
 
-然後安全刪除 `deploy/friend/runtime/`。因為朋友從未取得公開 VLESS UUID 或其他
+然後安全刪除 `deploy/nas/runtime/`。因為朋友從未取得公開 VLESS UUID 或其他
 站點 secret，正常撤銷不需要輪替所有 Shadowrocket 節點 credential。
 
 Cloudflare 官方權限說明：

@@ -393,6 +393,16 @@ test('subscription emits one explicitly selected node per configured egress site
 	);
 	const subscriptionLocation = quickResponse.headers.get('Location');
 	assert.match(subscriptionLocation, /^\/sub\?token=/);
+	const initialSubscription = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(initialSubscription.status, 200);
+	await initialSubscription.text();
+	const storedConfig = JSON.parse(await environment.KV.get('config.json'));
+	storedConfig.传输协议 = 'grpc';
+	await environment.KV.put('config.json', JSON.stringify(storedConfig));
 
 	const subscriptionResponse = await worker.fetch(
 		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
@@ -407,6 +417,7 @@ test('subscription emits one explicitly selected node per configured egress site
 	const siteCounts = { mac: 0, nas: 0 };
 	for (const link of links) {
 		const node = new URL(link);
+		assert.equal(node.searchParams.get('type'), 'ws');
 		const path = node.searchParams.get('path');
 		const site = new URL(path, 'https://worker.invalid').searchParams.get('egress');
 		if (site === 'mac' || site === 'nas') siteCounts[site]++;

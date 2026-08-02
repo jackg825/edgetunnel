@@ -5370,6 +5370,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	if (!config_JSON.订阅转换配置.SORT) config_JSON.订阅转换配置.SORT = false;
 	if (家庭出口已启用) {
 		config_JSON.协议类型 = 家庭入站协议;
+		config_JSON.传输协议 = "ws";
 		config_JSON.订阅转换配置.UDP = 家庭入站协议 === 'trojan';
 	}
 	if (!config_JSON.gRPCUserAgent) config_JSON.gRPCUserAgent = UA;

@@ -23,8 +23,21 @@
       "tag": "direct"
     }
   ],
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "local"
+      }
+    ]
+  },
   "route": {
     "rules": [
+      {
+        "domain_regex": ".+",
+        "action": "resolve",
+        "server": "local"
+      },
       {
         "ip_is_private": true,
         "action": "reject"
