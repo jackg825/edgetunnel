@@ -16,9 +16,10 @@ from operating this path in production.
 ./deploy/macmini/test-local.sh
 ```
 
-The installer stores the shared Trojan/Worker UUID in the macOS Keychain under
-the `edgetunnel-home-egress` service. The generated sing-box configuration is
-installed with mode `0600` at the Homebrew configuration path.
+The installer stores this site's relay-only Trojan password in the macOS
+Keychain under the `edgetunnel-home-egress` service. This value must not be used
+as the public VLESS UUID. The generated sing-box configuration is installed
+with mode `0600` at the Homebrew configuration path.
 The local test starts a temporary SOCKS client, sends an HTTPS request through
 the Trojan relay, and verifies that its public IP matches the Mac's direct
 public IP without printing the address.
@@ -44,11 +45,14 @@ rather than adding them to the TOML file.
 1. Create a named Cloudflare Tunnel and run its connector on this Mac.
 2. Enable private-network routing and route only the relay address as a `/32`.
 3. Add the site to `EGRESS_SITES` with an ID, display name, VPC binding name,
-   and relay address.
+   relay address, and a unique `secret_env` name.
 4. Bind this Tunnel directly to the Worker under the matching VPC Network
    binding name using its `tunnel_id`.
 5. Set `DEFAULT_EGRESS` to this site ID if the Mac should remain the default.
-6. Set the Worker `UUID` secret from the Keychain credential.
+6. Copy the relay password from the `edgetunnel-home-egress` Keychain item into
+   the Worker's site-specific secret, such as `EGRESS_MAC_RELAY_PASSWORD`.
+7. Store a different UUIDv4 in the `edgetunnel-worker-uuid` Keychain item and
+   set it as the Worker `UUID` secret. Only this public UUID is used by clients.
 
 Do not configure a public `PROXYIP`, SOCKS5 fallback, or a public route to port
 19090. Egress mode is designed to fail closed when the selected VPC binding is
@@ -71,6 +75,10 @@ After deploying the Worker, verify the complete Worker-to-Mac path:
 ```sh
 HOME_EGRESS_WORKER_HOST=worker.example.com ./deploy/macmini/test-worker.sh
 ```
+
+`test-worker.sh` reads the public VLESS UUID from the
+`edgetunnel-worker-uuid` Keychain item. It never reads or prints the site's
+relay password.
 
 For a multi-site deployment, set the explicit site ID so the test cannot pass
 through the default by accident:

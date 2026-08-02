@@ -15,9 +15,9 @@ Run sing-box or an equivalent relay on the NAS LAN address. The existing
 its listen address, listen port, and Trojan password using the NAS secret
 management mechanism.
 
-The Trojan password must equal the Worker's fixed `UUID` secret because the
-Worker translates public VLESS TCP requests into that authenticated private
-Trojan stream. Do not commit the rendered relay configuration.
+The Trojan password must equal this site's dedicated Worker secret referenced
+by `secret_env`. It must not equal the public VLESS `UUID` or another site's
+relay password. Do not commit the rendered relay configuration.
 
 Do not expose the relay port through the router or NAS public firewall. Reserve
 the NAS LAN address so its private `/32` route stays stable.
@@ -39,11 +39,12 @@ tunnel: <nas-tunnel-id>
 credentials-file: <nas-tunnel-credentials-file>
 warp-routing:
   enabled: true
-protocol: quic
+protocol: auto
 ```
 
-The NAS network must permit cloudflared's outbound QUIC traffic on UDP port
-7844. No inbound Internet port is required.
+The NAS network should permit cloudflared's outbound QUIC traffic on UDP port
+7844. With `auto`, cloudflared can use HTTP/2 over TCP 7844 if UDP is blocked.
+No inbound Internet port is required.
 
 ## 3. Add the Worker binding and site
 
@@ -54,8 +55,8 @@ same binding name from `EGRESS_SITES`:
 ```toml
 EGRESS_SITES = '''
 [
-  { "id": "mac", "name": "Taiwan Mac mini", "binding": "EGRESS_MAC_NET", "address": "<mac-relay-ip>:19090" },
-  { "id": "nas", "name": "Site B NAS", "binding": "EGRESS_NAS_NET", "address": "<nas-relay-ip>:19090" }
+  { "id": "mac", "name": "Taiwan Mac mini", "binding": "EGRESS_MAC_NET", "address": "<mac-relay-ip>:19090", "secret_env": "EGRESS_MAC_RELAY_PASSWORD" },
+  { "id": "nas", "name": "Site B NAS", "binding": "EGRESS_NAS_NET", "address": "<nas-relay-ip>:19090", "secret_env": "EGRESS_NAS_RELAY_PASSWORD" }
 ]
 '''
 DEFAULT_EGRESS = "mac"
@@ -69,6 +70,11 @@ remote = true
 
 Actual tunnel IDs, relay addresses, UUIDs, tokens, and credentials belong only
 in the ignored deployment configuration or secret stores.
+
+If this NAS belongs to a friend, do not give them `cloudflared tunnel login`,
+Wrangler, an API token, or your account `cert.pem`. Use the remotely-managed,
+tunnel-specific workflow in [`deploy/friend/README.md`](../friend/README.md)
+instead.
 
 ## 4. Verify without fallback
 

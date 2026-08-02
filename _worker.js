@@ -1,4 +1,4 @@
-const Version = '2026-08-02 11:02:24';
+const Version = '2026-08-02 11:22:44';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
@@ -12,7 +12,7 @@ function 读取出口站点配置(env) {
 	const 原始站点配置 = env.EGRESS_SITES;
 	if (原始站点配置 === undefined || 原始站点配置 === null || String(原始站点配置).trim() === '') {
 		const 家庭出口地址 = String(env.HOME_EGRESS || '').trim();
-		return 家庭出口地址 ? [{ id: 'home', name: String(env.HOME_EGRESS_NAME || 'Home').trim() || 'Home', binding: 'HOME_NET', address: 家庭出口地址 }] : [];
+		return 家庭出口地址 ? [{ id: 'home', name: String(env.HOME_EGRESS_NAME || 'Home').trim() || 'Home', binding: 'HOME_NET', address: 家庭出口地址, secretEnv: null }] : [];
 	}
 
 	let 站点配置;
@@ -29,13 +29,15 @@ function 读取出口站点配置(env) {
 		const name = String(站点?.name || id).trim();
 		const binding = String(站点?.binding || '').trim();
 		const address = String(站点?.address || '').trim();
+		const secretEnv = String(站点?.secret_env || '').trim();
 		if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) throw new Error(`EGRESS_SITES[${索引}].id is invalid`);
 		if (已使用ID.has(id)) throw new Error(`EGRESS_SITES contains duplicate id: ${id}`);
 		if (!name || name.length > 64) throw new Error(`EGRESS_SITES[${索引}].name is invalid`);
 		if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(binding)) throw new Error(`EGRESS_SITES[${索引}].binding is invalid`);
+		if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(secretEnv)) throw new Error(`EGRESS_SITES[${索引}].secret_env is invalid`);
 		解析木马反代地址(address);
 		已使用ID.add(id);
-		return { id, name, binding, address };
+		return { id, name, binding, address, secretEnv };
 	});
 }
 
@@ -69,8 +71,13 @@ function 应用家庭出口配置(反代上下文, env, url) {
 	if (!出口站点) throw new Error(`Unknown egress site: ${请求站点ID}`);
 	const 出口绑定 = env[出口站点.binding];
 	if (!出口绑定 || typeof 出口绑定.connect !== 'function') throw new Error(`${出口站点.binding} VPC binding is required for egress site ${出口站点.id}`);
+	const relayPassword = 出口站点.secretEnv ? String(env[出口站点.secretEnv] || '') : '';
+	if (出口站点.secretEnv && (relayPassword.length < 16 || relayPassword.length > 128 || /[\r\n]/.test(relayPassword))) {
+		throw new Error(`${出口站点.secretEnv} must contain a 16-128 character relay password without newlines`);
+	}
 	反代上下文.木马反代地址 = 解析木马反代地址(出口站点.address);
 	反代上下文.木马反代连接器 = (目标) => 出口绑定.connect(目标);
+	反代上下文.木马反代密码 = relayPassword || null;
 	反代上下文.强制家庭出口 = true;
 	反代上下文.反代兜底 = false;
 	反代上下文.出口站点ID = 出口站点.id;
@@ -655,7 +662,7 @@ async function 处理XHTTP请求(request, yourUUID, 反代上下文 = {}) {
 	};
 
 	let XHTTP上行写入队列 = null;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	return new Response(new ReadableStream({
 		async start(controller) {
 			let 已关闭 = false;
@@ -936,7 +943,7 @@ async function 处理gRPC请求(request, yourUUID, 反代上下文 = {}) {
 	const reader = request.body.getReader();
 	const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	let 判断是否是木马 = null;
 	let 当前写入Socket = null;
 	let 远端写入器 = null;
@@ -1243,7 +1250,7 @@ async function 处理WS请求(request, yourUUID, url, 反代上下文 = {}) {
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
 	let 判断是否是木马 = null;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
 	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
 	let WS上行写入队列 = null;
@@ -1756,10 +1763,11 @@ function 编码IPv6地址(hostname) {
 	return bytes;
 }
 
-function 构建木马请求握手(password, hostname, port, payload = null) {
+function 构建木马请求握手(password, hostname, port, payload = null, command = 1) {
 	const host = stripIPv6Brackets(hostname);
 	const portNum = Number(port);
 	if (!host || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) throw new Error('invalid Trojan destination');
+	if (command !== 1 && command !== 3) throw new Error('invalid Trojan command');
 	const encoder = new TextEncoder();
 	let address;
 	if (isIPv4(host)) {
@@ -1773,7 +1781,7 @@ function 构建木马请求握手(password, hostname, port, payload = null) {
 	}
 	return 拼接字节数据(
 		encoder.encode(sha224(password)),
-		new Uint8Array([0x0d, 0x0a, 1]),
+		new Uint8Array([0x0d, 0x0a, command]),
 		address,
 		new Uint8Array([portNum >>> 8, portNum & 0xff, 0x0d, 0x0a]),
 		payload
@@ -1781,8 +1789,13 @@ function 构建木马请求握手(password, hostname, port, payload = null) {
 }
 
 async function 转发木马UDP反代数据(chunk, webSocket, 上下文, request) {
-	const data = 数据转Uint8Array(chunk);
+	let data = 数据转Uint8Array(chunk);
 	if (!上下文.反代Socket) {
+		if (上下文.反代密码) {
+			const 入站首包 = 解析木马请求(data, 上下文.入站密码);
+			if (入站首包?.hasError || !入站首包?.isUDP) throw new Error('invalid Trojan UDP relay handshake');
+			data = 构建木马请求握手(上下文.反代密码, 入站首包.hostname, 入站首包.port, 入站首包.rawClientData, 3);
+		}
 		const TCP连接 = 上下文.反代连接器 ? null : 创建请求TCP连接器(request);
 		const socket = await 连接木马反代(data, TCP连接, 上下文.反代地址, 上下文.反代连接器);
 		上下文.反代Socket = socket;
@@ -2121,14 +2134,16 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const TCP连接 = 强制家庭出口 ? null : 创建请求TCP连接器(request);
 	const 使用木马反代 = (入站协议 === 'trojan' || (强制家庭出口 && 入站协议 === 'vless')) && (反代上下文.木马反代地址 || null);
 	const 木马反代目标 = 使用木马反代 ? 反代上下文.木马反代地址 : null;
+	const 木马反代密码 = 强制家庭出口 ? (反代上下文.木马反代密码 || yourUUID) : yourUUID;
+	const 重建家庭出口握手 = 强制家庭出口 && (入站协议 === 'vless' || 入站协议 === 'trojan');
 	const 木马反代握手数据 = !使用木马反代
 		? null
-		: 入站协议 === 'vless'
-			? 构建木马请求握手(yourUUID, host, portNum)
+		: 重建家庭出口握手
+			? 构建木马请求握手(木马反代密码, host, portNum)
 			: 提取木马反代握手数据(入站首包数据, rawData);
 	const 木马反代首包数据 = !使用木马反代
 		? null
-		: 入站协议 === 'vless'
+		: 重建家庭出口握手
 			? 拼接字节数据(木马反代握手数据, rawData)
 			: 入站首包数据;
 	if (强制家庭出口 && !使用木马反代) {

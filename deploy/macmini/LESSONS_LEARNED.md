@@ -84,8 +84,9 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
 - `cloudflared` 不解析 VLESS/Trojan，也不會自己成為任意 Internet 目的地的 NAT
   gateway，因此不能單獨取代 relay。可先沿用 sing-box；若日後更換為小型 daemon，
   必須保留相同的目的位址轉送、驗證與 fail-closed 語意。
-- `EGRESS_SITES` 只保存站點 ID、名稱、binding 名稱及私網 relay 位址。訂閱會為
-  每個 ingress route 產生各站點版本，並把 `egress=<site-id>` 放入傳輸 path。
+- `EGRESS_SITES` 只保存站點 ID、名稱、binding 名稱、私網 relay 位址及
+  `secret_env` 名稱，不保存 secret 值。訂閱會為每個 ingress route 產生各站點
+  版本，並把 `egress=<site-id>` 放入傳輸 path。
 - `DEFAULT_EGRESS` 只處理沒有 selector 的舊客戶端，不是健康檢查或自動備援。
   selector 不存在、binding 缺失或 relay 失敗時均直接終止連線。
 
@@ -144,6 +145,9 @@ curl -fsS http://127.0.0.1:<metrics-port>/metrics |
 
 - `ADMIN`、固定 `UUID` 與其他秘密使用 `wrangler secret`；relay credential 和
   訂閱 token 存在 macOS Keychain。
+- 每個 `EGRESS_SITES` 站點以 `secret_env` 指向獨立 relay secret。relay secret
+  不得與公開 VLESS UUID 共用，否則把朋友端加入出口時也會把所有公開節點的
+  client credential 交給對方。
 - 對外分享的 `wrangler.toml` 範例和文件只保留 `<tunnel-id>`、
   `<kv-namespace-id>`、`<lan-relay-ip>`、`<worker-hostname>` 這類占位符，
   不包含正式值。

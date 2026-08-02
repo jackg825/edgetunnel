@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-KEYCHAIN_SERVICE="edgetunnel-home-egress"
+KEYCHAIN_SERVICE="edgetunnel-worker-uuid"
 KEYCHAIN_ACCOUNT="$(id -un)"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKER_HOST="${HOME_EGRESS_WORKER_HOST:-}"
@@ -22,7 +22,7 @@ if [ -n "$SITE_ID" ]; then
 	WORKER_PATH="/?egress=$SITE_ID"
 fi
 
-RELAY_PASSWORD="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w)"
+WORKER_UUID="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w)"
 CLIENT_CONFIG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-worker-client.XXXXXX")"
 CLIENT_LOG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-worker-client-log.XXXXXX")"
 CLIENT_PID=''
@@ -39,7 +39,7 @@ trap cleanup EXIT HUP INT TERM
 jq -n \
 	--arg server "$WORKER_HOST" \
 	--arg connect_server "$WORKER_SERVER" \
-	--arg password "$RELAY_PASSWORD" \
+	--arg password "$WORKER_UUID" \
 	--arg worker_path "$WORKER_PATH" \
 	--argjson client_port "$CLIENT_PORT" \
 	'{

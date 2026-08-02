@@ -8,14 +8,18 @@ preview_urls = false
 [vars]
 EGRESS_SITES = '''
 [
-  { "id": "mac", "name": "Taiwan Mac mini", "binding": "EGRESS_MAC_NET", "address": "192.0.2.10:19090" },
-  { "id": "nas", "name": "Site B NAS", "binding": "EGRESS_NAS_NET", "address": "192.0.2.20:19090" }
+  { "id": "mac", "name": "Taiwan Mac mini", "binding": "EGRESS_MAC_NET", "address": "192.0.2.10:19090", "secret_env": "EGRESS_MAC_RELAY_PASSWORD" },
+  { "id": "nas", "name": "Site B NAS", "binding": "EGRESS_NAS_NET", "address": "192.0.2.20:19090", "secret_env": "EGRESS_NAS_RELAY_PASSWORD" }
 ]
 '''
 DEFAULT_EGRESS = "mac"
 EGRESS_PROTOCOL = "vless"
 HOST = "worker.example.com"
 OFF_LOG = "true"
+
+# Store values separately with:
+# wrangler secret put EGRESS_MAC_RELAY_PASSWORD
+# wrangler secret put EGRESS_NAS_RELAY_PASSWORD
 
 [[routes]]
 pattern = "worker.example.com"

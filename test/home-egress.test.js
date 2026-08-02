@@ -22,9 +22,11 @@ Object.defineProperty(globalThis, 'crypto', {
 
 const { default: worker } = await import('../_worker.js');
 const password = '90cd4a77-141a-43c9-991b-08263cfe9c10';
+const macRelayPassword = 'mac-relay-test-secret-00000001';
+const nasRelayPassword = 'nas-relay-test-secret-00000002';
 
-function trojanPacket({ command = 1, hostname = 'example.com', port = 443, payload = new Uint8Array([1, 2, 3]) } = {}) {
-	const auth = Buffer.from(createHash('sha224').update(password).digest('hex'));
+function trojanPacket({ command = 1, hostname = 'example.com', port = 443, payload = new Uint8Array([1, 2, 3]), authPassword = password } = {}) {
+	const auth = Buffer.from(createHash('sha224').update(authPassword).digest('hex'));
 	const host = Buffer.from(hostname);
 	return Uint8Array.from(Buffer.concat([
 		auth,
@@ -95,9 +97,11 @@ function multiSiteEnvironment(macConnect, nasConnect) {
 		DEFAULT_EGRESS: 'mac',
 		EGRESS_PROTOCOL: 'vless',
 		EGRESS_SITES: JSON.stringify([
-			{ id: 'mac', name: 'Taiwan Mac mini', binding: 'EGRESS_MAC_NET', address: '192.168.50.2:19090' },
-			{ id: 'nas', name: 'Site B NAS', binding: 'EGRESS_NAS_NET', address: '192.168.60.2:19090' }
+			{ id: 'mac', name: 'Taiwan Mac mini', binding: 'EGRESS_MAC_NET', address: '192.168.50.2:19090', secret_env: 'EGRESS_MAC_RELAY_PASSWORD' },
+			{ id: 'nas', name: 'Site B NAS', binding: 'EGRESS_NAS_NET', address: '192.168.60.2:19090', secret_env: 'EGRESS_NAS_RELAY_PASSWORD' }
 		]),
+		EGRESS_MAC_RELAY_PASSWORD: macRelayPassword,
+		EGRESS_NAS_RELAY_PASSWORD: nasRelayPassword,
 		EGRESS_MAC_NET: { connect: macConnect },
 		EGRESS_NAS_NET: { connect: nasConnect }
 	};
@@ -221,6 +225,7 @@ test('selects each configured egress site without contacting the other binding',
 	await waitFor(() => nasCalls.length === 1 && writes.length === 1, 'NAS VPC binding was not used');
 	assert.deepEqual(macCalls, []);
 	assert.deepEqual(nasCalls, [{ hostname: '192.168.60.2', port: 19090 }]);
+	assert.deepEqual(writes[0], trojanPacket({ authPassword: nasRelayPassword }));
 	assert.equal(publicCalls, 0);
 	await response.body.cancel();
 });
@@ -238,6 +243,7 @@ test('uses only DEFAULT_EGRESS when the client omits the site selector', async (
 
 	await waitFor(() => macCalls.length === 1 && writes.length === 1, 'default VPC binding was not used');
 	assert.deepEqual(nasCalls, []);
+	assert.deepEqual(writes[0], trojanPacket({ authPassword: macRelayPassword }));
 	await response.body.cancel();
 });
 
@@ -286,6 +292,72 @@ test('fails closed when the selected site binding is missing', async () => {
 	assert.equal(publicCalls, 0);
 });
 
+test('fails closed when the selected site relay secret is missing', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	const environment = multiSiteEnvironment(
+		() => { macCalls++; throw new Error('Mac binding used') },
+		() => { nasCalls++; throw new Error('NAS binding used') }
+	);
+	delete environment.EGRESS_NAS_RELAY_PASSWORD;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/tunnel?egress=nas'
+			),
+			environment,
+			{ waitUntil() { } }
+		),
+		/EGRESS_NAS_RELAY_PASSWORD must contain a 16-128 character relay password/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(nasCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('re-authenticates Trojan TCP with the selected site relay secret', async () => {
+	const writes = [];
+	const payload = new Uint8Array([6, 5, 4]);
+	const response = await worker.fetch(
+		requestWithBody(
+			trojanPacket({ payload }),
+			() => { throw new Error('public fallback used') },
+			'https://home-egress.example.test/tunnel?egress=nas'
+		),
+		multiSiteEnvironment(
+			() => { throw new Error('Mac fallback used') },
+			() => fakeSocket(writes)
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => writes.length === 1, 'Trojan TCP was not written to the NAS relay');
+	assert.deepEqual(writes[0], trojanPacket({ payload, authPassword: nasRelayPassword }));
+	await response.body.cancel();
+});
+
+test('re-authenticates Trojan UDP with the selected site relay secret', async () => {
+	const writes = [];
+	const payload = new Uint8Array([0, 1, 0]);
+	const response = await worker.fetch(
+		requestWithBody(
+			trojanPacket({ command: 3, port: 53, payload }),
+			() => { throw new Error('public fallback used') },
+			'https://home-egress.example.test/tunnel?egress=nas'
+		),
+		multiSiteEnvironment(
+			() => { throw new Error('Mac fallback used') },
+			() => fakeSocket(writes)
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => writes.length === 1, 'Trojan UDP was not written to the NAS relay');
+	assert.deepEqual(writes[0], trojanPacket({ command: 3, port: 53, payload, authPassword: nasRelayPassword }));
+	await response.body.cancel();
+});
+
 test('does not fall back to another site when the selected relay is unavailable', async () => {
 	let macCalls = 0, nasCalls = 0, publicCalls = 0;
 	const response = await worker.fetch(
@@ -328,7 +400,10 @@ test('subscription emits one explicitly selected node per configured egress site
 		context
 	);
 	assert.equal(subscriptionResponse.status, 200);
-	const links = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8').trim().split(/\r?\n/);
+	const decodedSubscription = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8');
+	assert.doesNotMatch(decodedSubscription, /EGRESS_(MAC|NAS)_RELAY_PASSWORD/);
+	assert.doesNotMatch(decodedSubscription, /(?:mac|nas)-relay-test-secret/);
+	const links = decodedSubscription.trim().split(/\r?\n/);
 	const siteCounts = { mac: 0, nas: 0 };
 	for (const link of links) {
 		const node = new URL(link);

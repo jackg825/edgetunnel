@@ -49,7 +49,9 @@ cp wrangler.example.toml wrangler.toml
 Mac mini 步驟、安全結論及 NAS 加入方式請參考
 [`deploy/macmini/README.md`](./deploy/macmini/README.md)、
 [`deploy/macmini/LESSONS_LEARNED.md`](./deploy/macmini/LESSONS_LEARNED.md) 與
-[`deploy/nas/README.md`](./deploy/nas/README.md)。`cloudflared` 只負責連接
+[`deploy/nas/README.md`](./deploy/nas/README.md)。朋友家端點請改用
+[`deploy/friend/README.md`](./deploy/friend/README.md) 的零帳號權限流程。
+`cloudflared` 只負責連接
 Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本地 relay。
 
 >[!TIP]
@@ -144,7 +146,7 @@ Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本�
 | **ADMIN** | ✅ | `123456` | 后台管理面板登录密码 |
 | **KEY** | ❌ | `CMLiussss` | 快速订阅路径密钥，访问 `/CMLiussss` 即可快速获取节点 |
 | **UUID** | ❌ | `90cd4a77-141a-43c9-991b-08263cfe9c10` | 强制固定UUID，只支持**UUIDv4**标准格式 |
-| **EGRESS_SITES** | ❌ | JSON array | 多地點出口的站點 ID、顯示名稱、VPC binding 與私網 relay 位址；正式值只放在忽略的部署設定 |
+| **EGRESS_SITES** | ❌ | JSON array | 多地點出口的站點 ID、名稱、VPC binding、私網 relay 位址與站點 secret binding 名稱；不直接包含 secret 值 |
 | **DEFAULT_EGRESS** | ❌ | `mac` | 未帶 `egress` selector 的舊節點固定使用哪個站點；不會作自動備援 |
 | **EGRESS_PROTOCOL** | ❌ | `vless` | 家庭出口模式的公開訂閱協議；目前建議 VLESS/TCP |
 | **PROXYIP** | ❌ | `proxyip.cmliussss.net:443` | 全局自定义反代 IP  |
