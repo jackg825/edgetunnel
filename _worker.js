@@ -12,7 +12,7 @@ function 读取出口站点配置(env) {
 	const 原始站点配置 = env.EGRESS_SITES;
 	if (原始站点配置 === undefined || 原始站点配置 === null || String(原始站点配置).trim() === '') {
 		const 家庭出口地址 = String(env.HOME_EGRESS || '').trim();
-		return 家庭出口地址 ? [{ id: 'home', name: String(env.HOME_EGRESS_NAME || 'Home').trim() || 'Home', binding: 'HOME_NET', address: 家庭出口地址, secretEnv: null }] : [];
+		return 家庭出口地址 ? [{ id: 'home', name: 'Home', binding: 'HOME_NET', address: 家庭出口地址, secretEnv: null }] : [];
 	}
 
 	let 站点配置;
@@ -64,6 +64,10 @@ function 附加出口站点到路径(path, 出口站点) {
 
 function 读取路径出口站点ID(pathname) {
 	return (出口站点路径正则.exec(String(pathname || ''))?.[1] || '').trim().toLowerCase();
+}
+
+function 附加出口站点到备注(备注, 出口站点) {
+	return 出口站点 ? `${出口站点.name} · ${备注}` : 备注;
 }
 
 function 应用家庭出口配置(反代上下文, env, url, userID) {
@@ -485,7 +489,8 @@ export default {
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 							if (出口站点列表.length > 0) 其他节点LINK = '';
-							const 订阅出口站点列表 = 出口站点列表.length > 0 ? 出口站点列表 : [null];
+							// 优选订阅生成器的节点路径固定为 '/'，按站点展开只会产出内容重复的节点
+							const 订阅出口站点列表 = (出口站点列表.length > 0 && !作为优选订阅生成器) ? 出口站点列表 : [null];
 							订阅内容 = 其他节点LINK + 完整优选IP.flatMap(原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例:
@@ -524,23 +529,22 @@ export default {
 									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 								}
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
+								if (协议类型 === 'ss' && !作为优选订阅生成器 && !config_JSON.SS.TLS) {
+									const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
+									const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
+									节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
+								}
 
 								return 订阅出口站点列表.map(出口站点 => {
 									let 出口节点路径 = 附加出口站点到路径(完整节点路径, 出口站点);
-									const 出口节点备注 = 出口站点 ? `${出口站点.name} · ${节点备注}` : 节点备注;
-									let 出口节点端口 = 节点端口;
+									const 出口节点备注 = 附加出口站点到备注(节点备注, 出口站点);
 									if (协议类型 === 'ss' && !作为优选订阅生成器) {
-										if (!config_JSON.SS.TLS) {
-											const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
-											const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
-											出口节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(出口节点端口))] ?? 出口节点端口);
-										}
 										出口节点路径 = (出口节点路径.includes('?') ? 出口节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (出口节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
 										if (!isSubConverterRequest) 出口节点路径 = 出口节点路径 + ';mux=0';
-										return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${出口节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(出口节点路径) : 出口节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(出口节点备注)}`;
+										return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(出口节点路径) : 出口节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(出口节点备注)}`;
 									}
 									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 出口节点路径, 作为优选订阅生成器);
-									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${出口节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(出口节点备注)}`;
+									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(出口节点备注)}`;
 								});
 							}).join('\n');
 						} else { // 订阅转换
@@ -2367,7 +2371,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	remoteConnWrapper.retryConnect = async () => connecttoPry(!已通过代理发送首包);
 
 	if (强制家庭出口) {
-		log(`[TCP转发] 强制通过家庭出口 ${反代上下文.出口站点ID || 'home'}: ${木马反代目标.hostname}:${木马反代目标.port}`);
+		log(`[TCP转发] 强制通过家庭出口 ${反代上下文.出口站点ID}: ${木马反代目标.hostname}:${木马反代目标.port}`);
 		try {
 			await connecttoPry();
 		} catch (err) {
@@ -5459,7 +5463,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 	const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 	const 传输路径参数值 = 获取传输路径参数值(config_JSON, config_JSON.完整节点路径);
-	const 默认节点名称 = 默认出口站点 ? `${默认出口站点.name} · ${config_JSON.优选订阅生成.SUBNAME}` : config_JSON.优选订阅生成.SUBNAME;
+	const 默认节点名称 = 附加出口站点到备注(config_JSON.优选订阅生成.SUBNAME, 默认出口站点);
 	config_JSON.LINK = config_JSON.协议类型 === 'ss'
 		? `${config_JSON.协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + userID)}@${host}:${config_JSON.SS.TLS ? '443' : '80'}?plugin=v2${encodeURIComponent(`ray-plugin;mode=websocket;host=${host};path=${((config_JSON.完整节点路径.includes('?') ? config_JSON.完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (config_JSON.完整节点路径 + '?enc=' + config_JSON.SS.加密方式)) + (config_JSON.SS.TLS ? ';tls' : ''))};mux=0`) + ECHLINK参数}#${encodeURIComponent(默认节点名称)}`
 		: `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(默认节点名称)}`;
