@@ -95,6 +95,9 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
   匹配到路徑結尾，接在後面會被一併吃掉。
 - NAS Docker 端固定 relay `.2` 與 cloudflared `.3`，避免動態 IP allocator 搶占
   private route 指向的位址。只 route relay `/32`，不要 route 整個 Docker subnet。
+- 純 relay container 沒有 TUN inbound，不應啟用 sing-box `auto_detect_interface`；
+  它會嘗試綁定預設介面，與 `cap_drop: ALL` 組合時可能令所有 direct dial 回傳
+  `operation not permitted`。停用介面綁定，不要增加 container capabilities。
 - 不受信任站點的 relay 必須先解析 domain，再套用 private/reserved IP 規則；只檢查
   原始目的 IP 會讓指向 LAN 或 metadata address 的 domain 繞過限制。
 

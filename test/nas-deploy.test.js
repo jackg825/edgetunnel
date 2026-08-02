@@ -14,6 +14,7 @@ test('NAS relay resolves domains before rejecting private destinations', async (
 	assert.ok(resolveRule >= 0);
 	assert.ok(resolveRule < privateRule);
 	assert.ok(resolveRule < reservedRule);
+	assert.equal(config.route.auto_detect_interface, false);
 });
 
 test('NAS Compose isolates the relay and fixes both endpoint addresses', async () => {

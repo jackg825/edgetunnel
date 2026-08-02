@@ -122,6 +122,9 @@ docker compose -f deploy/nas/runtime/compose.yaml logs --tail=100
   `auto` 優先 QUIC；UDP 受阻時只會把同一 Tunnel transport 改成 HTTP/2 TCP
   7844，不會切到其他出口。
 - sing-box 需要一般 DNS 與 Internet outbound，才能讓流量從 NAS 的 public IP 出口。
+- sing-box relay 沒有 TUN inbound，因此明確停用 `auto_detect_interface`，讓 Linux
+  依 container routing table 選擇出口；不要為了啟用介面綁定而增加 container
+  capabilities。
 - relay 沒有 host/LAN port。Container 使用 read-only filesystem、drop all
   capabilities 與 `no-new-privileges`；沒有掛載 Docker socket、`cert.pem`、Cloudflare
   credentials directory 或 NAS 資料目錄。
