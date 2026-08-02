@@ -66,7 +66,7 @@ function 读取路径出口站点ID(pathname) {
 	return (出口站点路径正则.exec(String(pathname || ''))?.[1] || '').trim().toLowerCase();
 }
 
-function 应用家庭出口配置(反代上下文, env, url) {
+function 应用家庭出口配置(反代上下文, env, url, userID) {
 	const 出口站点列表 = 读取出口站点配置(env);
 	if (出口站点列表.length === 0) return 反代上下文;
 	const 请求站点ID = 读取路径出口站点ID(url?.pathname);
@@ -82,7 +82,8 @@ function 应用家庭出口配置(反代上下文, env, url) {
 	}
 	反代上下文.木马反代地址 = 解析木马反代地址(出口站点.address);
 	反代上下文.木马反代连接器 = (目标) => 出口绑定.connect(目标);
-	反代上下文.木马反代密码 = relayPassword || null;
+	// 旧版 HOME_EGRESS 无站点密钥，此处回落到 UUID，使 TCP 与 UDP 共用同一套重建判断
+	反代上下文.木马反代密码 = relayPassword || userID;
 	反代上下文.强制家庭出口 = true;
 	反代上下文.反代兜底 = false;
 	反代上下文.出口站点ID = 出口站点.id;
@@ -146,11 +147,11 @@ export default {
 				if (请求前8总和 === 目标前8总和 && 请求UUID.slice(-12) === 目标UUID.slice(-12)) return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 			}
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
 			const referer = request.headers.get('Referer') || '';
 			const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
 			if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -2139,7 +2140,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const TCP连接 = 强制家庭出口 ? null : 创建请求TCP连接器(request);
 	const 使用木马反代 = (入站协议 === 'trojan' || (强制家庭出口 && 入站协议 === 'vless')) && (反代上下文.木马反代地址 || null);
 	const 木马反代目标 = 使用木马反代 ? 反代上下文.木马反代地址 : null;
-	const 木马反代密码 = 强制家庭出口 ? (反代上下文.木马反代密码 || yourUUID) : yourUUID;
+	const 木马反代密码 = 反代上下文.木马反代密码 || yourUUID;
 	const 重建家庭出口握手 = 强制家庭出口 && (入站协议 === 'vless' || 入站协议 === 'trojan');
 	const 木马反代握手数据 = !使用木马反代
 		? null
