@@ -45,6 +45,25 @@ URL/token 或其他站點的 relay secret。`cert.pem` 可建立、刪除與管�
 出口目的地與流量時間／大小等 metadata。TLS 內容仍由端到端 TLS 保護，但這不是
 把不受信任主機變成可信出口的方案；只能邀請你願意信任為網路出口營運者的人。
 
+### 誰能使用朋友的出口
+
+`/egress=<site-id>` 是**節點選擇機制，不是授權機制**。訂閱沒有 per-site ACL：
+任何持有訂閱 URL／token 的人，都能把 selector 換成 `friend` 並從朋友家的
+public IP 出去。因此「誰能使用朋友的出口」等於「誰持有你的訂閱」。
+
+這對朋友是實質風險，必須在邀請時說明：從他家 public IP 發出的流量，在對外
+的封鎖名單、濫用檢舉與法律歸屬上都算在他頭上。
+
+Owner 的相應義務：
+
+- 把訂閱 URL／token 當作 credential，不貼進 issue、commit、聊天截圖或
+  shell history。
+- 只把訂閱交給你也願意讓對方使用朋友出口的人。多一個訂閱持有人，等於多一個
+  可以用朋友家 IP 的人。
+- 目前架構不支援單一 Worker 內的 per-site 授權。若某個站點必須限定給特定
+  使用者，只能為該站點另外部署一個 Worker，使用獨立的 `UUID` 與訂閱 token，
+  並在該 Worker 的 `EGRESS_SITES` 只放這一個站點。
+
 ## 朋友端安裝
 
 需求：`amd64`／`arm64` Linux NAS 或主機、Docker Engine 與 Docker Compose。共用的
@@ -111,6 +130,11 @@ docker compose -f deploy/nas/runtime/compose.yaml down
 
 然後安全刪除 `deploy/nas/runtime/`。因為朋友從未取得公開 VLESS UUID 或其他
 站點 secret，正常撤銷不需要輪替所有 Shadowrocket 節點 credential。
+
+訂閱外洩是另一種情況：輪替 Tunnel token 只能停掉朋友端的 connector，擋不住
+持有舊訂閱的人。此時要輪替 Worker 的 `UUID` 與訂閱 token，並請所有正當使用者
+重新拉取訂閱。若朋友的站點仍在 `EGRESS_SITES` 中，在完成輪替前，任何持有舊
+訂閱的人都仍可從朋友家出口。
 
 Cloudflare 官方權限說明：
 
