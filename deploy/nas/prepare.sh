@@ -53,21 +53,17 @@ if [ ! -t 0 ]; then
 	exit 1
 fi
 
-STTY_STATE="$(stty -g)"
-printf '%s' 'Paste the tunnel-specific cloudflared token: '
-stty -echo
-IFS= read -r TUNNEL_TOKEN
-stty "$STTY_STATE"
-STTY_STATE=''
-printf '\n'
+read_secret() {
+	printf '%s' "$2"
+	STTY_STATE="$(stty -g)"
+	stty -echo
+	IFS= read -r "$1"
+	restore_terminal
+	printf '\n'
+}
 
-STTY_STATE="$(stty -g)"
-printf '%s' 'Paste the 64-character site relay password: '
-stty -echo
-IFS= read -r RELAY_PASSWORD
-stty "$STTY_STATE"
-STTY_STATE=''
-printf '\n'
+read_secret TUNNEL_TOKEN 'Paste the tunnel-specific cloudflared token: '
+read_secret RELAY_PASSWORD 'Paste the 64-character site relay password: '
 
 if [ "${#TUNNEL_TOKEN}" -lt 100 ]; then
 	printf '%s\n' 'The tunnel token is unexpectedly short.' >&2
