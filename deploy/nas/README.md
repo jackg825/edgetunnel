@@ -125,6 +125,9 @@ docker compose -f deploy/nas/runtime/compose.yaml logs --tail=100
 - relay 沒有 host/LAN port。Container 使用 read-only filesystem、drop all
   capabilities 與 `no-new-privileges`；沒有掛載 Docker socket、`cert.pem`、Cloudflare
   credentials directory 或 NAS 資料目錄。
+- cloudflared container 只為讀取 mode `0600` 的 file-backed Compose secret 而以
+  root 啟動；它仍採 read-only filesystem、drop all capabilities 與
+  `no-new-privileges`。這避免把 host 上的 Tunnel token 改成其他使用者可讀。
 - NAS 原有的 cloudflared service 可以保留；這個 bundle 使用獨立 container 與
   Tunnel token，不讀取或掛載原有的 `~/.cloudflared`。
 - relay 會先解析 domain，再拒絕 private、loopback、link-local、CGNAT、multicast

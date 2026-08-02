@@ -19,6 +19,7 @@ test('NAS relay resolves domains before rejecting private destinations', async (
 test('NAS Compose isolates the relay and fixes both endpoint addresses', async () => {
 	const compose = await readFile(new URL('compose.yaml.template', templateURL), 'utf8');
 	assert.match(compose, /cloudflared:[\s\S]*ipv4_address: __CLOUDFLARED_IP__/);
+	assert.match(compose, /cloudflared:[\s\S]*user: "0:0"/);
 	assert.match(compose, /sing-box:[\s\S]*ipv4_address: __RELAY_IP__/);
 	assert.doesNotMatch(compose, /^\s*ports:/m);
 	assert.doesNotMatch(compose, /docker\.sock|cert\.pem|privileged:|network_mode:/);
