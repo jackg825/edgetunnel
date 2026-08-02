@@ -61,9 +61,9 @@ function fakeSocket(writes) {
 	};
 }
 
-function requestWithBody(body, publicConnect) {
+function requestWithBody(body, publicConnect, url = 'https://home-egress.example.test/tunnel') {
 	return {
-		url: 'https://home-egress.example.test/tunnel',
+		url,
 		method: 'POST',
 		headers: new Headers({ 'content-type': 'application/octet-stream', 'user-agent': 'node-test' }),
 		body: new ReadableStream({
@@ -84,6 +84,40 @@ function homeEnvironment(connect) {
 		UUID: password,
 		HOME_EGRESS: '192.168.50.2:19090',
 		HOME_NET: { connect }
+	};
+}
+
+function multiSiteEnvironment(macConnect, nasConnect) {
+	return {
+		ADMIN: 'test-admin',
+		KEY: 'test-key',
+		UUID: password,
+		DEFAULT_EGRESS: 'mac',
+		EGRESS_PROTOCOL: 'vless',
+		EGRESS_SITES: JSON.stringify([
+			{ id: 'mac', name: 'Taiwan Mac mini', binding: 'EGRESS_MAC_NET', address: '192.168.50.2:19090' },
+			{ id: 'nas', name: 'Site B NAS', binding: 'EGRESS_NAS_NET', address: '192.168.60.2:19090' }
+		]),
+		EGRESS_MAC_NET: { connect: macConnect },
+		EGRESS_NAS_NET: { connect: nasConnect }
+	};
+}
+
+function metadataRequest(url, userAgent = 'Shadowrocket') {
+	return {
+		url,
+		method: 'GET',
+		headers: new Headers({ 'user-agent': userAgent }),
+		cf: { colo: 'TPE', asn: 0, asOrganization: 'test', country: 'TW', city: 'Taipei' },
+		fetcher: { connect() { throw new Error('public connector must not be used') } }
+	};
+}
+
+function memoryKV(initial = {}) {
+	const entries = new Map(Object.entries(initial));
+	return {
+		async get(key) { return entries.has(key) ? entries.get(key) : null },
+		async put(key, value) { entries.set(key, value) }
 	};
 }
 
@@ -166,4 +200,146 @@ test('translates VLESS TCP to Trojan through HOME_NET', async () => {
 	assert.deepEqual(writes[0], trojanPacket({ payload }));
 	assert.equal(publicCalls, 0);
 	await response.body.cancel();
+});
+
+test('selects each configured egress site without contacting the other binding', async () => {
+	const macCalls = [], nasCalls = [], writes = [];
+	let publicCalls = 0;
+	const response = await worker.fetch(
+		requestWithBody(
+			vlessPacket(),
+			() => { publicCalls++; throw new Error('public fallback used') },
+			'https://home-egress.example.test/tunnel?egress=nas'
+		),
+		multiSiteEnvironment(
+			address => { macCalls.push(address); return fakeSocket(writes) },
+			address => { nasCalls.push(address); return fakeSocket(writes) }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => nasCalls.length === 1 && writes.length === 1, 'NAS VPC binding was not used');
+	assert.deepEqual(macCalls, []);
+	assert.deepEqual(nasCalls, [{ hostname: '192.168.60.2', port: 19090 }]);
+	assert.equal(publicCalls, 0);
+	await response.body.cancel();
+});
+
+test('uses only DEFAULT_EGRESS when the client omits the site selector', async () => {
+	const macCalls = [], nasCalls = [], writes = [];
+	const response = await worker.fetch(
+		requestWithBody(vlessPacket(), () => { throw new Error('public fallback used') }),
+		multiSiteEnvironment(
+			address => { macCalls.push(address); return fakeSocket(writes) },
+			address => { nasCalls.push(address); return fakeSocket(writes) }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => macCalls.length === 1 && writes.length === 1, 'default VPC binding was not used');
+	assert.deepEqual(nasCalls, []);
+	await response.body.cancel();
+});
+
+test('fails closed on an unknown egress selector', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/tunnel?egress=missing'
+			),
+			multiSiteEnvironment(
+				() => { macCalls++; throw new Error('Mac binding used') },
+				() => { nasCalls++; throw new Error('NAS binding used') }
+			),
+			{ waitUntil() { } }
+		),
+		/Unknown egress site: missing/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(nasCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('fails closed when the selected site binding is missing', async () => {
+	let macCalls = 0, publicCalls = 0;
+	const environment = multiSiteEnvironment(
+		() => { macCalls++; throw new Error('Mac fallback used') },
+		() => { throw new Error('unused NAS connector') }
+	);
+	delete environment.EGRESS_NAS_NET;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/tunnel?egress=nas'
+			),
+			environment,
+			{ waitUntil() { } }
+		),
+		/EGRESS_NAS_NET VPC binding is required for egress site nas/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('does not fall back to another site when the selected relay is unavailable', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	const response = await worker.fetch(
+		requestWithBody(
+			vlessPacket(),
+			() => { publicCalls++; throw new Error('public fallback used') },
+			'https://home-egress.example.test/tunnel?egress=nas'
+		),
+		multiSiteEnvironment(
+			() => { macCalls++; throw new Error('Mac fallback used') },
+			() => { nasCalls++; throw new Error('NAS relay unavailable') }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => nasCalls === 1, 'selected NAS binding was not attempted');
+	assert.equal(macCalls, 0);
+	assert.equal(publicCalls, 0);
+	await response.body.cancel();
+});
+
+test('subscription emits one explicitly selected node per configured egress site', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV()
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	assert.match(subscriptionLocation, /^\/sub\?token=/);
+
+	const subscriptionResponse = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(subscriptionResponse.status, 200);
+	const links = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8').trim().split(/\r?\n/);
+	const siteCounts = { mac: 0, nas: 0 };
+	for (const link of links) {
+		const node = new URL(link);
+		const path = node.searchParams.get('path');
+		const site = new URL(path, 'https://worker.invalid').searchParams.get('egress');
+		if (site === 'mac' || site === 'nas') siteCounts[site]++;
+		const name = decodeURIComponent(node.hash.slice(1));
+		if (site === 'mac') assert.match(name, /^Taiwan Mac mini · /);
+		if (site === 'nas') assert.match(name, /^Site B NAS · /);
+		assert.doesNotMatch(name, /[\u{1F1E6}-\u{1F1FF}]/u);
+	}
+	assert.ok(siteCounts.mac > 0);
+	assert.equal(siteCounts.mac, siteCounts.nas);
 });

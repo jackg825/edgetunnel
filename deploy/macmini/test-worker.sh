@@ -7,10 +7,19 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKER_HOST="${HOME_EGRESS_WORKER_HOST:-}"
 WORKER_SERVER="${HOME_EGRESS_WORKER_SERVER:-$WORKER_HOST}"
 CLIENT_PORT="${HOME_EGRESS_WORKER_TEST_PORT:-19092}"
+SITE_ID="${HOME_EGRESS_SITE_ID:-}"
+WORKER_PATH="/"
 
 if [ -z "$WORKER_HOST" ]; then
 	printf '%s\n' "Set HOME_EGRESS_WORKER_HOST to the Worker custom hostname" >&2
 	exit 1
+fi
+
+if [ -n "$SITE_ID" ]; then
+	case "$SITE_ID" in
+		*[!a-z0-9_-]*|'') printf '%s\n' "HOME_EGRESS_SITE_ID contains invalid characters" >&2; exit 1 ;;
+	esac
+	WORKER_PATH="/?egress=$SITE_ID"
 fi
 
 RELAY_PASSWORD="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w)"
@@ -31,6 +40,7 @@ jq -n \
 	--arg server "$WORKER_HOST" \
 	--arg connect_server "$WORKER_SERVER" \
 	--arg password "$RELAY_PASSWORD" \
+	--arg worker_path "$WORKER_PATH" \
 	--argjson client_port "$CLIENT_PORT" \
 	'{
 		log: { level: "warn" },
@@ -42,7 +52,7 @@ jq -n \
 			server_port: 443,
 			uuid: $password,
 			tls: { enabled: true, server_name: $server },
-			transport: { type: "ws", path: "/", headers: { Host: $server } }
+			transport: { type: "ws", path: $worker_path, headers: { Host: $server } }
 		}],
 		route: { final: "worker-relay" }
 	}' > "$CLIENT_CONFIG"

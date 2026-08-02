@@ -6,8 +6,14 @@ workers_dev = false
 preview_urls = false
 
 [vars]
-HOME_EGRESS = "192.0.2.10:19090"
-HOME_PROTOCOL = "vless"
+EGRESS_SITES = '''
+[
+  { "id": "mac", "name": "Taiwan Mac mini", "binding": "EGRESS_MAC_NET", "address": "192.0.2.10:19090" },
+  { "id": "nas", "name": "Site B NAS", "binding": "EGRESS_NAS_NET", "address": "192.0.2.20:19090" }
+]
+'''
+DEFAULT_EGRESS = "mac"
+EGRESS_PROTOCOL = "vless"
 HOST = "worker.example.com"
 OFF_LOG = "true"
 
@@ -20,6 +26,11 @@ binding = "KV"
 id = "replace-with-kv-namespace-id"
 
 [[vpc_networks]]
-binding = "HOME_NET"
-tunnel_id = "replace-with-tunnel-id"
+binding = "EGRESS_MAC_NET"
+tunnel_id = "replace-with-mac-tunnel-id"
+remote = true
+
+[[vpc_networks]]
+binding = "EGRESS_NAS_NET"
+tunnel_id = "replace-with-nas-tunnel-id"
 remote = true

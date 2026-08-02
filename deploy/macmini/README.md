@@ -1,6 +1,6 @@
 # Mac mini home egress
 
-This directory installs the final Trojan relay used behind the Cloudflare Worker.
+This directory installs the Trojan relay used behind the Cloudflare Worker.
 The relay listens on the Mac's current default-interface address and sends all
 accepted TCP and UDP traffic through the Mac's normal Internet connection.
 
@@ -24,8 +24,8 @@ the Trojan relay, and verifies that its public IP matches the Mac's direct
 public IP without printing the address.
 
 Reserve the Mac's LAN address in the home router before creating the Cloudflare
-private route. The Worker `HOME_EGRESS` variable must contain the same address
-and port printed by the installer.
+private route. Its entry in `EGRESS_SITES` must contain the same address and
+port printed by the installer.
 
 ## Cloudflare resources
 
@@ -43,13 +43,16 @@ rather than adding them to the TOML file.
 
 1. Create a named Cloudflare Tunnel and run its connector on this Mac.
 2. Enable private-network routing and route only the relay address as a `/32`.
-3. Bind the Tunnel directly to the Worker as the `HOME_NET` VPC Network binding
-   using its `tunnel_id`.
-4. Set `HOME_EGRESS` to the relay address and port.
-5. Set the Worker `UUID` secret from the Keychain credential.
+3. Add the site to `EGRESS_SITES` with an ID, display name, VPC binding name,
+   and relay address.
+4. Bind this Tunnel directly to the Worker under the matching VPC Network
+   binding name using its `tunnel_id`.
+5. Set `DEFAULT_EGRESS` to this site ID if the Mac should remain the default.
+6. Set the Worker `UUID` secret from the Keychain credential.
 
 Do not configure a public `PROXYIP`, SOCKS5 fallback, or a public route to port
-19090. Home-egress mode is designed to fail closed when `HOME_NET` is down.
+19090. Egress mode is designed to fail closed when the selected VPC binding is
+down. It never tries another site unless the client explicitly selects it.
 
 After completing both CLI logins, `configure-cloudflared.sh` can create or reuse
 the named Tunnel, write the local connector configuration, and add the relay
@@ -69,13 +72,22 @@ After deploying the Worker, verify the complete Worker-to-Mac path:
 HOME_EGRESS_WORKER_HOST=worker.example.com ./deploy/macmini/test-worker.sh
 ```
 
+For a multi-site deployment, set the explicit site ID so the test cannot pass
+through the default by accident:
+
+```sh
+HOME_EGRESS_WORKER_HOST=worker.example.com \
+HOME_EGRESS_SITE_ID=mac \
+./deploy/macmini/test-worker.sh
+```
+
 ## Shadowrocket subscription
 
-The Worker KV binding enables its subscription endpoint. Home-egress mode emits
+The Worker KV binding enables its subscription endpoint. Egress mode emits
 VLESS-over-WebSocket-over-TLS nodes on the public side. Inside Cloudflare, the
-Worker translates VLESS TCP requests to the private Trojan relay on the Mac.
-VLESS UDP is deliberately not advertised so all supported traffic remains
-fail-closed through the Mac mini.
+Worker translates VLESS TCP requests to the private Trojan relay at the site
+selected by the node's `egress` query parameter. VLESS UDP is deliberately not
+advertised so all supported traffic remains fail-closed through that site.
 
 The production Shadowrocket profile uses VLESS over WebSocket with certificate
 verification, a Chrome fingerprint, randomized paths, ECH via Ali DoH and
@@ -112,4 +124,11 @@ networks where ECH negotiation succeeds during a latency test but proxied data
 does not pass reliably. Omitting the parameter keeps the KV-configured default.
 
 In Shadowrocket, add a server with type `Subscribe`, paste the URL, save it,
-then update the subscription and select the fastest imported node.
+then update the subscription and select the desired site node. Every ingress
+route is duplicated for each configured egress site; the original route name is
+preserved after the site name, and no flag emoji is added.
+
+`HOME_EGRESS` plus `HOME_NET` remain supported as a single-site compatibility
+configuration. New deployments should use `EGRESS_SITES`, `DEFAULT_EGRESS`,
+`EGRESS_PROTOCOL`, and one VPC binding per site as shown in
+[`wrangler.example.toml`](../../wrangler.example.toml).

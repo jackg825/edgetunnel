@@ -21,8 +21,8 @@ Shadowrocket
 - Worker 到 Mac mini 的私有段保留 Trojan。這一段位於 VPC/Tunnel 內，改成
   VLESS 對上海到台灣的主要網路延遲沒有實質幫助，反而會增加 relay 與 Worker
   的改造面。
-- `HOME_EGRESS` 啟用時必須 fail closed：VPC 或 Mac relay 不可用就讓連線失敗，
-  不得回退到公開 `PROXYIP`、SOCKS5 或 Cloudflare 直接出口。
+- `EGRESS_SITES` 啟用時必須 fail closed：所選 VPC 或 relay 不可用就讓連線
+  失敗，不得回退到另一地點、公開 `PROXYIP`、SOCKS5 或 Cloudflare 直接出口。
 - 私有路由只宣告 relay 主機的 `/32`，Mac 的 LAN 位址應在路由器上保留；不要
   把 relay port 暴露到公網。
 
@@ -75,6 +75,19 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
   Mac relay。錯誤宣告 UDP 常造成 DNS、HTTP/3 或影音應用看似連線但無資料。
 - 如需 UDP，必須分別測 DNS、QUIC 與一般 UDP，並確認封包確實由 Mac 出口；
   在測試完成前，讓客戶端回退 TCP 比提供假的 UDP 能力可靠。
+
+## 多地點出口
+
+- 每個可選地點需要獨立 Named Tunnel、VPC binding、私有 `/32` route 與本地
+  egress relay。把 NAS 加入 Mac 的 Tunnel 作為 replica 只會增加 HA，不會形成
+  可獨立選擇的出口。
+- `cloudflared` 不解析 VLESS/Trojan，也不會自己成為任意 Internet 目的地的 NAT
+  gateway，因此不能單獨取代 relay。可先沿用 sing-box；若日後更換為小型 daemon，
+  必須保留相同的目的位址轉送、驗證與 fail-closed 語意。
+- `EGRESS_SITES` 只保存站點 ID、名稱、binding 名稱及私網 relay 位址。訂閱會為
+  每個 ingress route 產生各站點版本，並把 `egress=<site-id>` 放入傳輸 path。
+- `DEFAULT_EGRESS` 只處理沒有 selector 的舊客戶端，不是健康檢查或自動備援。
+  selector 不存在、binding 缺失或 relay 失敗時均直接終止連線。
 
 ## KV、訂閱與外部依賴
 
@@ -146,7 +159,8 @@ curl -fsS http://127.0.0.1:<metrics-port>/metrics |
 上游 edgetunnel 的預設假設包含公開 ProxyIP、SOCKS/HTTP fallback、第三方優選
 API 與多種協議。家庭出口 fork 的安全邊界不同，因此更新上游時要逐項確認：
 
-- `HOME_EGRESS` 是否仍在所有 TCP 路徑強制使用 VPC connector。
+- `EGRESS_SITES` 的每個 selector 是否仍在所有 TCP 路徑強制使用對應 VPC
+  connector，且舊的 `HOME_EGRESS` 相容模式沒有繞過此限制。
 - 任一錯誤分支是否新增公開直連或 fallback。
 - 訂閱是否錯誤宣告 UDP，或洩漏內部 relay 資訊。
 - KV 日誌是否重新開啟，或新增高頻 write。
