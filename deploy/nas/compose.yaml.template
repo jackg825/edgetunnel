@@ -1,0 +1,52 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    user: "0:0"
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - auto
+      - run
+      - --token-file
+      - /run/secrets/tunnel_token
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - tunnel_token
+    networks:
+      edgetunnel_site:
+        ipv4_address: __CLOUDFLARED_IP__
+
+  sing-box:
+    image: ghcr.io/sagernet/sing-box:v1.13.12
+    restart: unless-stopped
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./sing-box.json:/etc/sing-box/config.json:ro
+    networks:
+      edgetunnel_site:
+        ipv4_address: __RELAY_IP__
+
+secrets:
+  tunnel_token:
+    file: ./tunnel-token
+
+networks:
+  edgetunnel_site:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: __SITE_SUBNET__

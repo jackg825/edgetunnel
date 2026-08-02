@@ -1,4 +1,4 @@
-const Version = '2026-07-11 19:02:35';
+const Version = '2026-08-02 11:22:44';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
@@ -8,14 +8,89 @@ const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 16 * 1024
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
 let TCP并发拨号数 = 2, 反代并发拨号数 = 1, 预加载竞速拨号 = false;
 
-function 应用家庭出口配置(反代上下文, env) {
-	const 家庭出口地址 = String(env.HOME_EGRESS || '').trim();
-	if (!家庭出口地址) return 反代上下文;
-	if (!env.HOME_NET || typeof env.HOME_NET.connect !== 'function') throw new Error('HOME_NET VPC binding is required when HOME_EGRESS is configured');
-	反代上下文.木马反代地址 = 解析木马反代地址(家庭出口地址);
-	反代上下文.木马反代连接器 = (目标) => env.HOME_NET.connect(目标);
+function 读取出口站点配置(env) {
+	const 原始站点配置 = env.EGRESS_SITES;
+	if (原始站点配置 === undefined || 原始站点配置 === null || String(原始站点配置).trim() === '') {
+		const 家庭出口地址 = String(env.HOME_EGRESS || '').trim();
+		return 家庭出口地址 ? [{ id: 'home', name: 'Home', binding: 'HOME_NET', address: 家庭出口地址, secretEnv: null }] : [];
+	}
+
+	let 站点配置;
+	try {
+		站点配置 = typeof 原始站点配置 === 'string' ? JSON.parse(原始站点配置) : 原始站点配置;
+	} catch (error) {
+		throw new Error(`EGRESS_SITES must be valid JSON: ${error.message}`);
+	}
+	if (!Array.isArray(站点配置) || 站点配置.length === 0) throw new Error('EGRESS_SITES must contain at least one site');
+
+	const 已使用ID = new Set();
+	return 站点配置.map((站点, 索引) => {
+		const id = String(站点?.id || '').trim().toLowerCase();
+		const name = String(站点?.name || id).trim();
+		const binding = String(站点?.binding || '').trim();
+		const address = String(站点?.address || '').trim();
+		const secretEnv = String(站点?.secret_env || '').trim();
+		if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) throw new Error(`EGRESS_SITES[${索引}].id is invalid`);
+		if (已使用ID.has(id)) throw new Error(`EGRESS_SITES contains duplicate id: ${id}`);
+		if (!name || name.length > 64) throw new Error(`EGRESS_SITES[${索引}].name is invalid`);
+		if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(binding)) throw new Error(`EGRESS_SITES[${索引}].binding is invalid`);
+		if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(secretEnv)) throw new Error(`EGRESS_SITES[${索引}].secret_env is invalid`);
+		解析木马反代地址(address);
+		已使用ID.add(id);
+		return { id, name, binding, address, secretEnv };
+	});
+}
+
+function 获取默认出口站点(出口站点列表, env) {
+	if (出口站点列表.length === 0) return null;
+	const 默认ID = String(env.DEFAULT_EGRESS || 出口站点列表[0].id).trim().toLowerCase();
+	const 默认站点 = 出口站点列表.find(站点 => 站点.id === 默认ID);
+	if (!默认站点) throw new Error(`DEFAULT_EGRESS does not match a configured site: ${默认ID}`);
+	return 默认站点;
+}
+
+// 出口选择器写在路径片段而非查询参数，gRPC 的 serviceName 会丢弃 '?' 之后的内容。
+// 必须置于路径最前：/video/(.+)$ 与 /trojan=([^?#\s]+) 都会贪婪吃到路径结尾。
+const 出口站点路径正则 = /\/egress=([^/?#\s]+)/i;
+
+function 附加出口站点到路径(path, 出口站点) {
+	if (!出口站点) return path;
+	const 路径 = String(path || '/');
+	const 分隔索引 = 路径.search(/[?#]/);
+	const 路径主体 = (分隔索引 === -1 ? 路径 : 路径.slice(0, 分隔索引)).replace(/\/egress=[^/?#\s]*/gi, '');
+	const 其余部分 = 分隔索引 === -1 ? '' : 路径.slice(分隔索引);
+	return `/egress=${出口站点.id}${路径主体 === '/' ? '' : 路径主体}${其余部分}`;
+}
+
+function 读取路径出口站点ID(pathname) {
+	return (出口站点路径正则.exec(String(pathname || ''))?.[1] || '').trim().toLowerCase();
+}
+
+function 附加出口站点到备注(备注, 出口站点) {
+	return 出口站点 ? `${出口站点.name} · ${备注}` : 备注;
+}
+
+function 应用家庭出口配置(反代上下文, env, url, userID) {
+	const 出口站点列表 = 读取出口站点配置(env);
+	if (出口站点列表.length === 0) return 反代上下文;
+	const 请求站点ID = 读取路径出口站点ID(url?.pathname);
+	const 出口站点 = 请求站点ID
+		? 出口站点列表.find(站点 => 站点.id === 请求站点ID)
+		: 获取默认出口站点(出口站点列表, env);
+	if (!出口站点) throw new Error(`Unknown egress site: ${请求站点ID}`);
+	const 出口绑定 = env[出口站点.binding];
+	if (!出口绑定 || typeof 出口绑定.connect !== 'function') throw new Error(`${出口站点.binding} VPC binding is required for egress site ${出口站点.id}`);
+	const relayPassword = 出口站点.secretEnv ? String(env[出口站点.secretEnv] || '') : '';
+	if (出口站点.secretEnv && (relayPassword.length < 16 || relayPassword.length > 128 || /[\r\n]/.test(relayPassword))) {
+		throw new Error(`${出口站点.secretEnv} must contain a 16-128 character relay password without newlines`);
+	}
+	反代上下文.木马反代地址 = 解析木马反代地址(出口站点.address);
+	反代上下文.木马反代连接器 = (目标) => 出口绑定.connect(目标);
+	// 旧版 HOME_EGRESS 无站点密钥，此处回落到 UUID，使 TCP 与 UDP 共用同一套重建判断
+	反代上下文.木马反代密码 = relayPassword || userID;
 	反代上下文.强制家庭出口 = true;
 	反代上下文.反代兜底 = false;
+	反代上下文.出口站点ID = 出口站点.id;
 	return 反代上下文;
 }
 ///////////////////////////////////////////////////////查杀特征码///////////////////////////////////////////////
@@ -76,11 +151,11 @@ export default {
 				if (请求前8总和 === 目标前8总和 && 请求UUID.slice(-12) === 目标UUID.slice(-12)) return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 			}
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
 			const referer = request.headers.get('Referer') || '';
 			const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
 			if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -324,6 +399,7 @@ export default {
 					const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
 					if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
 						config_JSON = await 读取config_JSON(env, host, userID, UA);
+						const 出口站点列表 = 读取出口站点配置(env);
 						if (url.searchParams.has('ech')) config_JSON.ECH = ['1', 'true'].includes(String(url.searchParams.get('ech')).toLowerCase());
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
@@ -412,7 +488,10 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
-							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
+							if (出口站点列表.length > 0) 其他节点LINK = '';
+							// 优选订阅生成器的节点路径固定为 '/'，按站点展开只会产出内容重复的节点
+							const 订阅出口站点列表 = (出口站点列表.length > 0 && !作为优选订阅生成器) ? 出口站点列表 : [null];
+							订阅内容 = 其他节点LINK + 完整优选IP.flatMap(原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例:
 								//   - 域名: hj.xmm1993.top:2096#备注 或 example.com
@@ -430,7 +509,7 @@ export default {
 								} else {
 									// 不规范的格式，跳过处理返回null
 									console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
-									return null;
+									return [];
 								}
 
 								let 完整节点路径 = config_JSON.完整节点路径;
@@ -450,21 +529,24 @@ export default {
 									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 								}
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-
-								if (协议类型 === 'ss' && !作为优选订阅生成器) {
-									if (!config_JSON.SS.TLS) {
-										const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
-										const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
-										节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
-									}
-									完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
-									if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
-									return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
-								} else {
-									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
-									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(节点备注)}`;
+								if (协议类型 === 'ss' && !作为优选订阅生成器 && !config_JSON.SS.TLS) {
+									const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
+									const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
+									节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
 								}
-							}).filter(item => item !== null).join('\n');
+
+								return 订阅出口站点列表.map(出口站点 => {
+									let 出口节点路径 = 附加出口站点到路径(完整节点路径, 出口站点);
+									const 出口节点备注 = 附加出口站点到备注(节点备注, 出口站点);
+									if (协议类型 === 'ss' && !作为优选订阅生成器) {
+										出口节点路径 = (出口节点路径.includes('?') ? 出口节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (出口节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
+										if (!isSubConverterRequest) 出口节点路径 = 出口节点路径 + ';mux=0';
+										return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(出口节点路径) : 出口节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(出口节点备注)}`;
+									}
+									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 出口节点路径, 作为优选订阅生成器);
+									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(出口节点备注)}`;
+								});
+							}).join('\n');
 						} else { // 订阅转换
 							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&cnIspCode=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}`;
 							try {
@@ -590,7 +672,7 @@ async function 处理XHTTP请求(request, yourUUID, 反代上下文 = {}) {
 	};
 
 	let XHTTP上行写入队列 = null;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	return new Response(new ReadableStream({
 		async start(controller) {
 			let 已关闭 = false;
@@ -871,7 +953,7 @@ async function 处理gRPC请求(request, yourUUID, 反代上下文 = {}) {
 	const reader = request.body.getReader();
 	const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	let 判断是否是木马 = null;
 	let 当前写入Socket = null;
 	let 远端写入器 = null;
@@ -1178,7 +1260,7 @@ async function 处理WS请求(request, yourUUID, url, 反代上下文 = {}) {
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
 	let 判断是否是木马 = null;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器 };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: 反代上下文.木马反代地址, 反代连接器: 反代上下文.木马反代连接器, 反代密码: 反代上下文.木马反代密码, 入站密码: yourUUID };
 	const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
 	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
 	let WS上行写入队列 = null;
@@ -1691,10 +1773,11 @@ function 编码IPv6地址(hostname) {
 	return bytes;
 }
 
-function 构建木马请求握手(password, hostname, port, payload = null) {
+function 构建木马请求握手(password, hostname, port, payload = null, command = 1) {
 	const host = stripIPv6Brackets(hostname);
 	const portNum = Number(port);
 	if (!host || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) throw new Error('invalid Trojan destination');
+	if (command !== 1 && command !== 3) throw new Error('invalid Trojan command');
 	const encoder = new TextEncoder();
 	let address;
 	if (isIPv4(host)) {
@@ -1708,7 +1791,7 @@ function 构建木马请求握手(password, hostname, port, payload = null) {
 	}
 	return 拼接字节数据(
 		encoder.encode(sha224(password)),
-		new Uint8Array([0x0d, 0x0a, 1]),
+		new Uint8Array([0x0d, 0x0a, command]),
 		address,
 		new Uint8Array([portNum >>> 8, portNum & 0xff, 0x0d, 0x0a]),
 		payload
@@ -1716,8 +1799,13 @@ function 构建木马请求握手(password, hostname, port, payload = null) {
 }
 
 async function 转发木马UDP反代数据(chunk, webSocket, 上下文, request) {
-	const data = 数据转Uint8Array(chunk);
+	let data = 数据转Uint8Array(chunk);
 	if (!上下文.反代Socket) {
+		if (上下文.反代密码) {
+			const 入站首包 = 解析木马请求(data, 上下文.入站密码);
+			if (入站首包?.hasError || !入站首包?.isUDP) throw new Error('invalid Trojan UDP relay handshake');
+			data = 构建木马请求握手(上下文.反代密码, 入站首包.hostname, 入站首包.port, 入站首包.rawClientData, 3);
+		}
 		const TCP连接 = 上下文.反代连接器 ? null : 创建请求TCP连接器(request);
 		const socket = await 连接木马反代(data, TCP连接, 上下文.反代地址, 上下文.反代连接器);
 		上下文.反代Socket = socket;
@@ -2056,14 +2144,16 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const TCP连接 = 强制家庭出口 ? null : 创建请求TCP连接器(request);
 	const 使用木马反代 = (入站协议 === 'trojan' || (强制家庭出口 && 入站协议 === 'vless')) && (反代上下文.木马反代地址 || null);
 	const 木马反代目标 = 使用木马反代 ? 反代上下文.木马反代地址 : null;
+	const 木马反代密码 = 反代上下文.木马反代密码 || yourUUID;
+	const 重建家庭出口握手 = 强制家庭出口 && (入站协议 === 'vless' || 入站协议 === 'trojan');
 	const 木马反代握手数据 = !使用木马反代
 		? null
-		: 入站协议 === 'vless'
-			? 构建木马请求握手(yourUUID, host, portNum)
+		: 重建家庭出口握手
+			? 构建木马请求握手(木马反代密码, host, portNum)
 			: 提取木马反代握手数据(入站首包数据, rawData);
 	const 木马反代首包数据 = !使用木马反代
 		? null
-		: 入站协议 === 'vless'
+		: 重建家庭出口握手
 			? 拼接字节数据(木马反代握手数据, rawData)
 			: 入站首包数据;
 	if (强制家庭出口 && !使用木马反代) {
@@ -2281,7 +2371,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	remoteConnWrapper.retryConnect = async () => connecttoPry(!已通过代理发送首包);
 
 	if (强制家庭出口) {
-		log(`[TCP转发] 强制通过家庭出口: ${木马反代目标.hostname}:${木马反代目标.port}`);
+		log(`[TCP转发] 强制通过家庭出口 ${反代上下文.出口站点ID}: ${木马反代目标.hostname}:${木马反代目标.port}`);
 		try {
 			await connecttoPry();
 		} catch (err) {
@@ -4984,12 +5074,19 @@ async function MD5MD5(文本) {
 	return 第二次十六进制.toLowerCase();
 }
 
+const 常用路径目录 = ["about", "account", "acg", "act", "activity", "ad", "ads", "ajax", "album", "albums", "anime", "api", "app", "apps", "archive", "archives", "article", "articles", "ask", "auth", "avatar", "bbs", "bd", "blog", "blogs", "book", "books", "bt", "buy", "cart", "category", "categories", "cb", "channel", "channels", "chat", "china", "city", "class", "classify", "clip", "clips", "club", "cn", "code", "collect", "collection", "comic", "comics", "community", "company", "config", "contact", "content", "course", "courses", "cp", "data", "detail", "details", "dh", "directory", "discount", "discuss", "dl", "dload", "doc", "docs", "document", "documents", "doujin", "download", "downloads", "drama", "edu", "en", "ep", "episode", "episodes", "event", "events", "f", "faq", "favorite", "favourites", "favs", "feedback", "file", "files", "film", "films", "forum", "forums", "friend", "friends", "game", "games", "gif", "go", "go.html", "go.php", "group", "groups", "help", "home", "hot", "htm", "html", "image", "images", "img", "index", "info", "intro", "item", "items", "ja", "jp", "jump", "jump.html", "jump.php", "jumping", "knowledge", "lang", "lesson", "lessons", "lib", "library", "link", "links", "list", "live", "lives", "m", "mag", "magnet", "mall", "manhua", "map", "member", "members", "message", "messages", "mobile", "movie", "movies", "music", "my", "new", "news", "note", "novel", "novels", "online", "order", "out", "out.html", "out.php", "outbound", "p", "page", "pages", "pay", "payment", "pdf", "photo", "photos", "pic", "pics", "picture", "pictures", "play", "player", "playlist", "post", "posts", "product", "products", "program", "programs", "project", "qa", "question", "rank", "ranking", "read", "readme", "redirect", "redirect.html", "redirect.php", "reg", "register", "res", "resource", "retrieve", "sale", "search", "season", "seasons", "section", "seller", "series", "service", "services", "setting", "settings", "share", "shop", "show", "shows", "site", "soft", "sort", "source", "special", "star", "stars", "static", "stock", "store", "stream", "streaming", "streams", "student", "study", "tag", "tags", "task", "teacher", "team", "tech", "temp", "test", "thread", "tool", "tools", "topic", "topics", "torrent", "trade", "travel", "tv", "txt", "type", "u", "upload", "uploads", "url", "urls", "user", "users", "v", "version", "videos", "view", "vip", "vod", "watch", "web", "wenku", "wiki", "work", "www", "zh", "zh-cn", "zh-tw", "zip"];
+
+// 抽样索引而非整表洗牌：订阅生成会按 优选IP数 × 出口站点数 调用本函数
 function 随机路径(完整节点路径 = "/") {
-	const 常用路径目录 = ["about", "account", "acg", "act", "activity", "ad", "ads", "ajax", "album", "albums", "anime", "api", "app", "apps", "archive", "archives", "article", "articles", "ask", "auth", "avatar", "bbs", "bd", "blog", "blogs", "book", "books", "bt", "buy", "cart", "category", "categories", "cb", "channel", "channels", "chat", "china", "city", "class", "classify", "clip", "clips", "club", "cn", "code", "collect", "collection", "comic", "comics", "community", "company", "config", "contact", "content", "course", "courses", "cp", "data", "detail", "details", "dh", "directory", "discount", "discuss", "dl", "dload", "doc", "docs", "document", "documents", "doujin", "download", "downloads", "drama", "edu", "en", "ep", "episode", "episodes", "event", "events", "f", "faq", "favorite", "favourites", "favs", "feedback", "file", "files", "film", "films", "forum", "forums", "friend", "friends", "game", "games", "gif", "go", "go.html", "go.php", "group", "groups", "help", "home", "hot", "htm", "html", "image", "images", "img", "index", "info", "intro", "item", "items", "ja", "jp", "jump", "jump.html", "jump.php", "jumping", "knowledge", "lang", "lesson", "lessons", "lib", "library", "link", "links", "list", "live", "lives", "m", "mag", "magnet", "mall", "manhua", "map", "member", "members", "message", "messages", "mobile", "movie", "movies", "music", "my", "new", "news", "note", "novel", "novels", "online", "order", "out", "out.html", "out.php", "outbound", "p", "page", "pages", "pay", "payment", "pdf", "photo", "photos", "pic", "pics", "picture", "pictures", "play", "player", "playlist", "post", "posts", "product", "products", "program", "programs", "project", "qa", "question", "rank", "ranking", "read", "readme", "redirect", "redirect.html", "redirect.php", "reg", "register", "res", "resource", "retrieve", "sale", "search", "season", "seasons", "section", "seller", "series", "service", "services", "setting", "settings", "share", "shop", "show", "shows", "site", "soft", "sort", "source", "special", "star", "stars", "static", "stock", "store", "stream", "streaming", "streams", "student", "study", "tag", "tags", "task", "teacher", "team", "tech", "temp", "test", "thread", "tool", "tools", "topic", "topics", "torrent", "trade", "travel", "tv", "txt", "type", "u", "upload", "uploads", "url", "urls", "user", "users", "v", "version", "videos", "view", "vip", "vod", "watch", "web", "wenku", "wiki", "work", "www", "zh", "zh-cn", "zh-tw", "zip"];
 	const 随机数 = Math.floor(Math.random() * 3 + 1);
-	const 随机路径 = 常用路径目录.sort(() => 0.5 - Math.random()).slice(0, 随机数).join('/');
-	if (完整节点路径 === "/") return `/${随机路径}`;
-	else return `/${随机路径 + 完整节点路径.replace('/?', '?')}`;
+	const 已选索引 = [];
+	while (已选索引.length < 随机数) {
+		const 索引 = Math.floor(Math.random() * 常用路径目录.length);
+		if (!已选索引.includes(索引)) 已选索引.push(索引);
+	}
+	const 随机目录 = 已选索引.map(索引 => 常用路径目录[索引]).join('/');
+	if (完整节点路径 === "/") return `/${随机目录}`;
+	else return `/${随机目录 + 完整节点路径.replace('/?', '?')}`;
 }
 
 function 替换星号为随机字符(内容) {
@@ -5167,14 +5264,15 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {
 	const _p = 特征码字典[0];
-	const 家庭入站协议 = String(env.HOME_PROTOCOL || 'trojan').toLowerCase() === 'vless' ? 'vless' : 'trojan';
+	const 出口站点列表 = 读取出口站点配置(env), 家庭出口已启用 = 出口站点列表.length > 0;
+	const 家庭入站协议 = String(env.EGRESS_PROTOCOL || env.HOME_PROTOCOL || 'trojan').toLowerCase() === 'vless' ? 'vless' : 'trojan';
 	const host = hostname, Ali_DoH = "https://dns.alidns.com/dns-query", ECH_SNI = "cloudflare-ech.com", 占位符 = '{{IP:PORT}}', 初始化开始时间 = performance.now(), 默认配置JSON = {
 		TIME: new Date().toISOString(),
 		HOST: host,
 		HOSTS: [hostname],
 		UUID: userID,
 		PATH: "/",
-		协议类型: env.HOME_EGRESS ? 家庭入站协议 : "v" + "le" + "ss",
+		协议类型: 家庭出口已启用 ? 家庭入站协议 : "v" + "le" + "ss",
 		传输协议: "ws",
 		gRPC模式: "gun",
 		gRPCUserAgent: UA,
@@ -5209,7 +5307,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 			SUBCONFIG: `https://raw.githubusercontent.com/${特征码字典[1]}/ACL4SSR/refs/heads/main/Clash/config/ACL4SSR_Online_Mini_MultiMode_CF.ini`,
 			SUBEMOJI: false,
 			SUBLIST: false, //仅输出节点信息
-			UDP: Boolean(env.HOME_EGRESS && 家庭入站协议 === 'trojan'), // 启用 UDP
+			UDP: Boolean(家庭出口已启用 && 家庭入站协议 === 'trojan'), // 启用 UDP
 			XUDP: false, // 启用 XUDP
 			TLS13: false, // 启用 TLS 1.3
 			APPEND_TYPE: false, // 插入节点类型
@@ -5287,7 +5385,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	if (!config_JSON.订阅转换配置.TLS13) config_JSON.订阅转换配置.TLS13 = false;
 	if (!config_JSON.订阅转换配置.APPEND_TYPE) config_JSON.订阅转换配置.APPEND_TYPE = false;
 	if (!config_JSON.订阅转换配置.SORT) config_JSON.订阅转换配置.SORT = false;
-	if (env.HOME_EGRESS) {
+	if (家庭出口已启用) {
 		config_JSON.协议类型 = 家庭入站协议;
 		config_JSON.订阅转换配置.UDP = 家庭入站协议 === 'trojan';
 	}
@@ -5353,6 +5451,9 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const 查询部分 = 查询数组.length ? '?' + 查询数组.join('?') : '';
 	const 最终查询部分 = 反代查询参数 ? (查询部分 ? 查询部分 + '&' + 反代查询参数 : '?' + 反代查询参数) : 查询部分;
 	config_JSON.完整节点路径 = (路径部分 || '/') + (路径部分 && 路径反代参数 ? '/' : '') + 路径反代参数 + 最终查询部分 + (config_JSON.启用0RTT ? (最终查询部分 ? '&' : '?') + 'ed=2560' : '');
+	// 出口选择器并入完整节点路径，确保订阅、LINK 与 Surge 热补丁三处消费方都携带站点标识
+	const 默认出口站点 = 获取默认出口站点(出口站点列表, env);
+	config_JSON.完整节点路径 = 附加出口站点到路径(config_JSON.完整节点路径, 默认出口站点);
 
 	if (!config_JSON.TLS分片 && config_JSON.TLS分片 !== null) config_JSON.TLS分片 = null;
 	const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
@@ -5362,9 +5463,10 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 	const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 	const 传输路径参数值 = 获取传输路径参数值(config_JSON, config_JSON.完整节点路径);
+	const 默认节点名称 = 附加出口站点到备注(config_JSON.优选订阅生成.SUBNAME, 默认出口站点);
 	config_JSON.LINK = config_JSON.协议类型 === 'ss'
-		? `${config_JSON.协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + userID)}@${host}:${config_JSON.SS.TLS ? '443' : '80'}?plugin=v2${encodeURIComponent(`ray-plugin;mode=websocket;host=${host};path=${((config_JSON.完整节点路径.includes('?') ? config_JSON.完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (config_JSON.完整节点路径 + '?enc=' + config_JSON.SS.加密方式)) + (config_JSON.SS.TLS ? ';tls' : ''))};mux=0`) + ECHLINK参数}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`
-		: `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+		? `${config_JSON.协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + userID)}@${host}:${config_JSON.SS.TLS ? '443' : '80'}?plugin=v2${encodeURIComponent(`ray-plugin;mode=websocket;host=${host};path=${((config_JSON.完整节点路径.includes('?') ? config_JSON.完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (config_JSON.完整节点路径 + '?enc=' + config_JSON.SS.加密方式)) + (config_JSON.SS.TLS ? ';tls' : ''))};mux=0`) + ECHLINK参数}#${encodeURIComponent(默认节点名称)}`
+		: `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(默认节点名称)}`;
 	config_JSON.优选订阅生成.TOKEN = await MD5MD5(hostname + userID);
 
 	const 初始化TG_JSON = { BotToken: null, ChatID: null };

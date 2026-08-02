@@ -22,9 +22,11 @@ Object.defineProperty(globalThis, 'crypto', {
 
 const { default: worker } = await import('../_worker.js');
 const password = '90cd4a77-141a-43c9-991b-08263cfe9c10';
+const macRelayPassword = 'mac-relay-test-secret-00000001';
+const nasRelayPassword = 'nas-relay-test-secret-00000002';
 
-function trojanPacket({ command = 1, hostname = 'example.com', port = 443, payload = new Uint8Array([1, 2, 3]) } = {}) {
-	const auth = Buffer.from(createHash('sha224').update(password).digest('hex'));
+function trojanPacket({ command = 1, hostname = 'example.com', port = 443, payload = new Uint8Array([1, 2, 3]), authPassword = password } = {}) {
+	const auth = Buffer.from(createHash('sha224').update(authPassword).digest('hex'));
 	const host = Buffer.from(hostname);
 	return Uint8Array.from(Buffer.concat([
 		auth,
@@ -61,9 +63,9 @@ function fakeSocket(writes) {
 	};
 }
 
-function requestWithBody(body, publicConnect) {
+function requestWithBody(body, publicConnect, url = 'https://home-egress.example.test/tunnel') {
 	return {
-		url: 'https://home-egress.example.test/tunnel',
+		url,
 		method: 'POST',
 		headers: new Headers({ 'content-type': 'application/octet-stream', 'user-agent': 'node-test' }),
 		body: new ReadableStream({
@@ -84,6 +86,42 @@ function homeEnvironment(connect) {
 		UUID: password,
 		HOME_EGRESS: '192.168.50.2:19090',
 		HOME_NET: { connect }
+	};
+}
+
+function multiSiteEnvironment(macConnect, nasConnect) {
+	return {
+		ADMIN: 'test-admin',
+		KEY: 'test-key',
+		UUID: password,
+		DEFAULT_EGRESS: 'mac',
+		EGRESS_PROTOCOL: 'vless',
+		EGRESS_SITES: JSON.stringify([
+			{ id: 'mac', name: 'Taiwan Mac mini', binding: 'EGRESS_MAC_NET', address: '192.168.50.2:19090', secret_env: 'EGRESS_MAC_RELAY_PASSWORD' },
+			{ id: 'nas', name: 'Site B NAS', binding: 'EGRESS_NAS_NET', address: '192.168.60.2:19090', secret_env: 'EGRESS_NAS_RELAY_PASSWORD' }
+		]),
+		EGRESS_MAC_RELAY_PASSWORD: macRelayPassword,
+		EGRESS_NAS_RELAY_PASSWORD: nasRelayPassword,
+		EGRESS_MAC_NET: { connect: macConnect },
+		EGRESS_NAS_NET: { connect: nasConnect }
+	};
+}
+
+function metadataRequest(url, userAgent = 'Shadowrocket') {
+	return {
+		url,
+		method: 'GET',
+		headers: new Headers({ 'user-agent': userAgent }),
+		cf: { colo: 'TPE', asn: 0, asOrganization: 'test', country: 'TW', city: 'Taipei' },
+		fetcher: { connect() { throw new Error('public connector must not be used') } }
+	};
+}
+
+function memoryKV(initial = {}) {
+	const entries = new Map(Object.entries(initial));
+	return {
+		async get(key) { return entries.has(key) ? entries.get(key) : null },
+		async put(key, value) { entries.set(key, value) }
 	};
 }
 
@@ -166,4 +204,316 @@ test('translates VLESS TCP to Trojan through HOME_NET', async () => {
 	assert.deepEqual(writes[0], trojanPacket({ payload }));
 	assert.equal(publicCalls, 0);
 	await response.body.cancel();
+});
+
+test('selects each configured egress site without contacting the other binding', async () => {
+	const macCalls = [], nasCalls = [], writes = [];
+	let publicCalls = 0;
+	const response = await worker.fetch(
+		requestWithBody(
+			vlessPacket(),
+			() => { publicCalls++; throw new Error('public fallback used') },
+			'https://home-egress.example.test/egress=nas/tunnel'
+		),
+		multiSiteEnvironment(
+			address => { macCalls.push(address); return fakeSocket(writes) },
+			address => { nasCalls.push(address); return fakeSocket(writes) }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => nasCalls.length === 1 && writes.length === 1, 'NAS VPC binding was not used');
+	assert.deepEqual(macCalls, []);
+	assert.deepEqual(nasCalls, [{ hostname: '192.168.60.2', port: 19090 }]);
+	assert.deepEqual(writes[0], trojanPacket({ authPassword: nasRelayPassword }));
+	assert.equal(publicCalls, 0);
+	await response.body.cancel();
+});
+
+test('uses only DEFAULT_EGRESS when the client omits the site selector', async () => {
+	const macCalls = [], nasCalls = [], writes = [];
+	const response = await worker.fetch(
+		requestWithBody(vlessPacket(), () => { throw new Error('public fallback used') }),
+		multiSiteEnvironment(
+			address => { macCalls.push(address); return fakeSocket(writes) },
+			address => { nasCalls.push(address); return fakeSocket(writes) }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => macCalls.length === 1 && writes.length === 1, 'default VPC binding was not used');
+	assert.deepEqual(nasCalls, []);
+	assert.deepEqual(writes[0], trojanPacket({ authPassword: macRelayPassword }));
+	await response.body.cancel();
+});
+
+test('fails closed on an unknown egress selector', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/egress=missing/tunnel'
+			),
+			multiSiteEnvironment(
+				() => { macCalls++; throw new Error('Mac binding used') },
+				() => { nasCalls++; throw new Error('NAS binding used') }
+			),
+			{ waitUntil() { } }
+		),
+		/Unknown egress site: missing/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(nasCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('fails closed when the selected site binding is missing', async () => {
+	let macCalls = 0, publicCalls = 0;
+	const environment = multiSiteEnvironment(
+		() => { macCalls++; throw new Error('Mac fallback used') },
+		() => { throw new Error('unused NAS connector') }
+	);
+	delete environment.EGRESS_NAS_NET;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/egress=nas/tunnel'
+			),
+			environment,
+			{ waitUntil() { } }
+		),
+		/EGRESS_NAS_NET VPC binding is required for egress site nas/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('fails closed when the selected site relay secret is missing', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	const environment = multiSiteEnvironment(
+		() => { macCalls++; throw new Error('Mac binding used') },
+		() => { nasCalls++; throw new Error('NAS binding used') }
+	);
+	delete environment.EGRESS_NAS_RELAY_PASSWORD;
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(
+				vlessPacket(),
+				() => { publicCalls++; throw new Error('public fallback used') },
+				'https://home-egress.example.test/egress=nas/tunnel'
+			),
+			environment,
+			{ waitUntil() { } }
+		),
+		/EGRESS_NAS_RELAY_PASSWORD must contain a 16-128 character relay password/
+	);
+	assert.equal(macCalls, 0);
+	assert.equal(nasCalls, 0);
+	assert.equal(publicCalls, 0);
+});
+
+test('re-authenticates Trojan TCP with the selected site relay secret', async () => {
+	const writes = [];
+	const payload = new Uint8Array([6, 5, 4]);
+	const response = await worker.fetch(
+		requestWithBody(
+			trojanPacket({ payload }),
+			() => { throw new Error('public fallback used') },
+			'https://home-egress.example.test/egress=nas/tunnel'
+		),
+		multiSiteEnvironment(
+			() => { throw new Error('Mac fallback used') },
+			() => fakeSocket(writes)
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => writes.length === 1, 'Trojan TCP was not written to the NAS relay');
+	assert.deepEqual(writes[0], trojanPacket({ payload, authPassword: nasRelayPassword }));
+	await response.body.cancel();
+});
+
+test('re-authenticates Trojan UDP with the selected site relay secret', async () => {
+	const writes = [];
+	const payload = new Uint8Array([0, 1, 0]);
+	const response = await worker.fetch(
+		requestWithBody(
+			trojanPacket({ command: 3, port: 53, payload }),
+			() => { throw new Error('public fallback used') },
+			'https://home-egress.example.test/egress=nas/tunnel'
+		),
+		multiSiteEnvironment(
+			() => { throw new Error('Mac fallback used') },
+			() => fakeSocket(writes)
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => writes.length === 1, 'Trojan UDP was not written to the NAS relay');
+	assert.deepEqual(writes[0], trojanPacket({ command: 3, port: 53, payload, authPassword: nasRelayPassword }));
+	await response.body.cancel();
+});
+
+test('does not fall back to another site when the selected relay is unavailable', async () => {
+	let macCalls = 0, nasCalls = 0, publicCalls = 0;
+	const response = await worker.fetch(
+		requestWithBody(
+			vlessPacket(),
+			() => { publicCalls++; throw new Error('public fallback used') },
+			'https://home-egress.example.test/egress=nas/tunnel'
+		),
+		multiSiteEnvironment(
+			() => { macCalls++; throw new Error('Mac fallback used') },
+			() => { nasCalls++; throw new Error('NAS relay unavailable') }
+		),
+		{ waitUntil() { } }
+	);
+
+	await waitFor(() => nasCalls === 1, 'selected NAS binding was not attempted');
+	assert.equal(macCalls, 0);
+	assert.equal(publicCalls, 0);
+	await response.body.cancel();
+});
+
+test('subscription emits one explicitly selected node per configured egress site', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV()
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	assert.match(subscriptionLocation, /^\/sub\?token=/);
+	const initialSubscription = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(initialSubscription.status, 200);
+	await initialSubscription.text();
+	const storedConfig = JSON.parse(await environment.KV.get('config.json'));
+	storedConfig.传输协议 = 'grpc';
+	await environment.KV.put('config.json', JSON.stringify(storedConfig));
+
+	const subscriptionResponse = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(subscriptionResponse.status, 200);
+	const decodedSubscription = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8');
+	assert.doesNotMatch(decodedSubscription, /EGRESS_(MAC|NAS)_RELAY_PASSWORD/);
+	assert.doesNotMatch(decodedSubscription, /(?:mac|nas)-relay-test-secret/);
+	const links = decodedSubscription.trim().split(/\r?\n/);
+	const siteCounts = { mac: 0, nas: 0 };
+	for (const link of links) {
+		const node = new URL(link);
+		// gRPC 会丢弃 serviceName 中 '?' 之后的内容，路径片段形式的选择器必须存活
+		assert.equal(node.searchParams.get('type'), 'grpc');
+		const path = node.searchParams.get('serviceName');
+		assert.doesNotMatch(path, /\?/, 'gRPC serviceName 不应残留查询串');
+		const site = /\/egress=([^/?#\s]+)/i.exec(path)?.[1];
+		if (site === 'mac' || site === 'nas') siteCounts[site]++;
+		const name = decodeURIComponent(node.hash.slice(1));
+		if (site === 'mac') assert.match(name, /^Taiwan Mac mini · /);
+		if (site === 'nas') assert.match(name, /^Site B NAS · /);
+		assert.doesNotMatch(name, /[\u{1F1E6}-\u{1F1FF}]/u);
+	}
+	assert.ok(siteCounts.mac > 0);
+	assert.equal(siteCounts.mac, siteCounts.nas);
+});
+
+test('egress selector precedes the chained-proxy segment without corrupting it', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV({ 'ADD.txt': '1.2.3.4:443#TestNode $socks5://user:pass@10.0.0.1:1080' })
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	const initialSubscription = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	await initialSubscription.text();
+	// 关闭随机IP，改用 ADD.txt 中带 $socks5:// 备注的条目触发链式代理路径
+	const storedConfig = JSON.parse(await environment.KV.get('config.json'));
+	storedConfig.优选订阅生成.本地IP库.随机IP = false;
+	await environment.KV.put('config.json', JSON.stringify(storedConfig));
+
+	const subscriptionResponse = await worker.fetch(
+		metadataRequest(`https://home-egress.example.test${subscriptionLocation}`),
+		environment,
+		context
+	);
+	assert.equal(subscriptionResponse.status, 200);
+	const decoded = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8');
+	const 链式节点 = decoded.trim().split(/\r?\n/)
+		.map(link => new URL(link).searchParams.get('path'))
+		.filter(path => path && path.includes('/video/'));
+
+	assert.ok(链式节点.length > 0, `订阅应当产出链式代理节点: ${decoded}`);
+	for (const path of 链式节点) {
+		// selector 必须在最前：/video/(.+)$ 会贪婪吃到路径结尾，接在后面会吞掉 base64
+		assert.match(path, /^\/egress=(?:mac|nas)\/video\/[^/?#]+/, `链式代理段被 selector 破坏: ${path}`);
+		assert.equal((path.match(/\/egress=/g) || []).length, 1, `selector 重复出现: ${path}`);
+	}
+});
+
+test('Surge hot patch keeps the egress selector in the injected ws-path', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV()
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(
+		metadataRequest('https://home-egress.example.test/test-key'),
+		environment,
+		context
+	);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	assert.match(subscriptionLocation, /^\/sub\?token=/);
+
+	// 订阅转换后端返回缺少 ws-path 的 Surge 节点，迫使热补丁注入完整节点路径
+	const 后端节点 = 'TestNode = tro' + 'jan, 1.2.3.4, 443, password=placeholder, sni=example.com, skip-cert-verify=false';
+	const 原始fetch = globalThis.fetch;
+	let 订阅转换被调用 = false;
+	globalThis.fetch = async () => {
+		订阅转换被调用 = true;
+		return new Response(`#!MANAGED-CONFIG placeholder\n[Proxy]\n${后端节点}\n`, { status: 200 });
+	};
+	let surge订阅内容;
+	try {
+		const surgeResponse = await worker.fetch(
+			metadataRequest(`https://home-egress.example.test${subscriptionLocation}&surge`, 'Surge/5'),
+			environment,
+			context
+		);
+		assert.equal(surgeResponse.status, 200);
+		surge订阅内容 = await surgeResponse.text();
+	} finally {
+		globalThis.fetch = 原始fetch;
+	}
+
+	assert.ok(订阅转换被调用, '订阅转换后端应当被请求');
+	const ws路径匹配 = /ws-path=([^,]+)/.exec(surge订阅内容);
+	assert.ok(ws路径匹配, `Surge 输出应当注入 ws-path: ${surge订阅内容}`);
+	const 选择器 = /\/egress=([^/?#\s]+)/i.exec(ws路径匹配[1])?.[1];
+	assert.equal(选择器, 'mac', 'Surge 注入的 ws-path 必须携带出口站点选择器');
 });

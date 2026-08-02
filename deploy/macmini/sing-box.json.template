@@ -12,7 +12,7 @@
       "users": [
         {
           "name": "edgetunnel",
-          "password": "replace-during-install"
+          "password": "replace-with-site-relay-secret"
         }
       ]
     }

@@ -30,7 +30,7 @@
 
 ## 💡 快速部署
 
-### 🔒 本 Fork 的 Mac mini 家庭出口設定
+### 🔒 本 Fork 的多地點家庭出口設定
 
 公開 repository 只保留 [`wrangler.example.toml`](./wrangler.example.toml)
 範例，不包含正式網域、私網 IP、Cloudflare Tunnel/KV ID、UUID、
@@ -42,9 +42,17 @@ cp wrangler.example.toml wrangler.toml
 
 將 `wrangler.toml` 的保留範例值替換成實際資源；這個檔案已被 Git
 忽略。`ADMIN`、`UUID` 等秘密使用 `wrangler secret put <NAME>`，不要
-寫入 TOML、README 或 commit。Mac mini 家庭出口步驟與安全結論請參考
-[`deploy/macmini/README.md`](./deploy/macmini/README.md) 與
-[`deploy/macmini/LESSONS_LEARNED.md`](./deploy/macmini/LESSONS_LEARNED.md)。
+寫入 TOML、README 或 commit。每個地點使用獨立 Named Tunnel、VPC binding
+及本地 egress relay；訂閱節點以路徑片段 `/egress=<site-id>` 明確選擇出口。所選出口
+不可用時會直接失敗，不回退 Cloudflare 公網或另一個地點。
+
+Mac mini 步驟、安全結論及 NAS 加入方式請參考
+[`deploy/macmini/README.md`](./deploy/macmini/README.md)、
+[`deploy/macmini/LESSONS_LEARNED.md`](./deploy/macmini/LESSONS_LEARNED.md) 與
+[`deploy/nas/README.md`](./deploy/nas/README.md)。朋友家端點請改用
+[`deploy/friend/README.md`](./deploy/friend/README.md) 的零帳號權限流程。
+`cloudflared` 只負責連接
+Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本地 relay。
 
 >[!TIP]
 > 📖 **详尽图文教程**：[edgetunnel 部署指南](https://cmliussss.com/p/edt2/)
@@ -138,6 +146,9 @@ cp wrangler.example.toml wrangler.toml
 | **ADMIN** | ✅ | `123456` | 后台管理面板登录密码 |
 | **KEY** | ❌ | `CMLiussss` | 快速订阅路径密钥，访问 `/CMLiussss` 即可快速获取节点 |
 | **UUID** | ❌ | `90cd4a77-141a-43c9-991b-08263cfe9c10` | 强制固定UUID，只支持**UUIDv4**标准格式 |
+| **EGRESS_SITES** | ❌ | JSON array | 多地點出口的站點 ID、名稱、VPC binding、私網 relay 位址與站點 secret binding 名稱；不直接包含 secret 值 |
+| **DEFAULT_EGRESS** | ❌ | `mac` | 未帶 `/egress=` selector 的舊節點固定使用哪個站點；不會作自動備援 |
+| **EGRESS_PROTOCOL** | ❌ | `vless` | 家庭出口模式的公開訂閱協議（`vless` 或 `trojan`）；selector 以路徑片段傳遞，不限制傳輸協議 |
 | **PROXYIP** | ❌ | `proxyip.cmliussss.net:443` | 全局自定义反代 IP  |
 | **URL** | ❌ | `https://cloudflare-error-page-3th.pages.dev` | 默认主页伪装地址（可填写网页 URL 或 `1101`） |
 | **GO2SOCKS5** | ❌ | `blog.cmliussss.com`,`*.ip111.cn`,`*google.com` | 强制走 SOCKS5 的名单 (`*` 为全局，域名用逗号分隔) |

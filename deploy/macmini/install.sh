@@ -46,4 +46,4 @@ install -m 600 "$TEMP_CONFIG" "$CONFIG_PATH"
 brew services restart sing-box >/dev/null
 
 printf 'sing-box relay is listening on %s:%s\n' "$LISTEN_ADDRESS" "$RELAY_PORT"
-printf 'Shared credential is stored in macOS Keychain service: %s\n' "$KEYCHAIN_SERVICE"
+printf 'Site relay credential is stored in macOS Keychain service: %s\n' "$KEYCHAIN_SERVICE"
