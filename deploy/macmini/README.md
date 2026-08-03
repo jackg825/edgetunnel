@@ -1,8 +1,15 @@
 # Mac mini home egress
 
 This directory installs the Trojan relay used behind the Cloudflare Worker.
-The relay listens on the Mac's current default-interface address and sends all
-accepted TCP and UDP traffic through the Mac's normal Internet connection.
+sing-box accepts Trojan on loopback and sends TCP and UDP traffic through the
+Mac's normal Internet connection. The Cloudflare Tunnel advertises only
+`127.0.0.1/32`, so the connector reaches sing-box without exposing the relay to
+the LAN.
+
+The loopback route avoids a macOS 26.6 failure affecting TCP connections whose
+source and destination are the same non-loopback address. It also removes the
+need for a local TCP forwarder, preserving the shortest path and highest
+available throughput.
 
 See [LESSONS_LEARNED.md](./LESSONS_LEARNED.md) for the sanitized deployment,
 GFW compatibility, Shadowrocket, cost, monitoring, and security conclusions
@@ -21,12 +28,27 @@ Keychain under the `edgetunnel-home-egress` service. This value must not be used
 as the public VLESS UUID. The generated sing-box configuration is installed
 with mode `0600` at the Homebrew configuration path.
 The local test starts a temporary SOCKS client, sends an HTTPS request through
-the Trojan relay, and verifies that its public IP matches the Mac's direct
-public IP without printing the address.
+the loopback Trojan relay, and verifies that its public IP matches the Mac's
+direct public IP without printing the address.
 
-Reserve the Mac's LAN address in the home router before creating the Cloudflare
-private route. Its entry in `EGRESS_SITES` must contain the same address and
-port printed by the installer.
+The Mac entry in `EGRESS_SITES` should use `127.0.0.1:19090`. Do not use the
+Mac's LAN address for a connector and origin running on the same macOS host.
+
+## Local-network isolation
+
+The generated sing-box configuration resolves destination hostnames before
+routing, then rejects non-public, loopback, RFC 1918, link-local, CGNAT,
+benchmark, documentation, multicast, reserved, and IPv6 destination ranges.
+Friends using the public VLESS endpoint can therefore reach public IPv4
+Internet services but cannot use the Mac relay to connect to the Mac itself,
+the home router, other LAN devices, or a hostname that resolves to one of those
+addresses. `test-worker.sh` verifies loopback IP, hostname-based, and LAN-bound
+attempts against temporary HTTP listeners that are removed after the test.
+
+Keep router port forwarding, UPnP, and NAT-PMP disabled for Mac services that
+must remain private. An intentionally published service on the router's public
+WAN address is outside this destination-range policy and should have its own
+authentication and firewall controls.
 
 ## Cloudflare resources
 
@@ -38,12 +60,15 @@ and endpoints in the ignored local file:
 cp wrangler.example.toml wrangler.toml
 ```
 
-Replace every example value, including the documentation-only TEST-NET relay
-address. Store `ADMIN`, `UUID`, and other credentials with `wrangler secret`
-rather than adding them to the TOML file.
+Replace the example resource IDs and site-specific values, including the
+documentation-only TEST-NET NAS address. Keep the Mac address at
+`127.0.0.1:19090` when cloudflared and sing-box run on the same host. Store
+`ADMIN`, `UUID`, and other credentials with `wrangler secret` rather than adding
+them to the TOML file.
 
 1. Create a named Cloudflare Tunnel and run its connector on this Mac.
-2. Enable private-network routing and route only the relay address as a `/32`.
+2. Enable private-network routing and route only `127.0.0.1/32` through this
+   Tunnel.
 3. Add the site to `EGRESS_SITES` with an ID, display name, VPC binding name,
    relay address, and a unique `secret_env` name.
 4. Bind this Tunnel directly to the Worker under the matching VPC Network
@@ -59,9 +84,9 @@ Do not configure a public `PROXYIP`, SOCKS5 fallback, or a public route to port
 down. It never tries another site unless the client explicitly selects it.
 
 After completing both CLI logins, `configure-cloudflared.sh` can create or reuse
-the named Tunnel, write the local connector configuration, and add the relay
-address as a `/32` private route. It deliberately stops before installing the
-LaunchAgent so the command can be run interactively:
+the named Tunnel, write the local connector configuration, and add
+`127.0.0.1/32` as the private route. It deliberately stops before installing
+the LaunchAgent so the command can be run interactively:
 
 ```sh
 wrangler login --use-keyring

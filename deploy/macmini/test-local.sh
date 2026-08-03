@@ -62,4 +62,4 @@ if [ -z "$DIRECT_IP" ] || [ "$DIRECT_IP" != "$RELAY_IP" ]; then
 	exit 1
 fi
 
-printf 'Local Trojan relay test passed; egress location=%s\n' "$RELAY_LOCATION"
+printf 'Local loopback Trojan relay test passed; egress location=%s\n' "$RELAY_LOCATION"

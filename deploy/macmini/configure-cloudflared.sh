@@ -6,9 +6,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TEMPLATE_PATH="$SCRIPT_DIR/cloudflared-config.json.template"
 CLOUDFLARED_DIR="$HOME/.cloudflared"
 CONFIG_PATH="$CLOUDFLARED_DIR/config.yml"
-DEFAULT_INTERFACE="$(route -n get default | awk '/interface:/{print $2; exit}')"
-LISTEN_ADDRESS="${HOME_EGRESS_LISTEN:-$(ipconfig getifaddr "$DEFAULT_INTERFACE")}"
-ROUTE_CIDR="$LISTEN_ADDRESS/32"
+ROUTE_CIDR="${HOME_EGRESS_ROUTE_CIDR:-127.0.0.1/32}"
 
 if ! wrangler whoami >/dev/null 2>&1; then
 	printf '%s\n' "Wrangler is not authenticated. Run: wrangler login --use-keyring" >&2

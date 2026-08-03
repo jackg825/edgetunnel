@@ -247,6 +247,44 @@ test('uses only DEFAULT_EGRESS when the client omits the site selector', async (
 	await response.body.cancel();
 });
 
+test('KV site management changes the default and fails closed for a disabled selector', async () => {
+	const macCalls = [], nasCalls = [], writes = [];
+	let publicCalls = 0;
+	const environment = multiSiteEnvironment(
+		address => { macCalls.push(address); return fakeSocket(writes); },
+		address => { nasCalls.push(address); return fakeSocket(writes); }
+	);
+	environment.KV = memoryKV({
+		'egress-sites.json': JSON.stringify({
+			version: 1,
+			defaultSite: 'nas',
+			sites: [
+				{ id: 'nas', name: 'Synology NAS', enabled: true },
+				{ id: 'mac', name: 'Taiwan Mac mini', enabled: false }
+			]
+		})
+	});
+
+	const response = await worker.fetch(
+		requestWithBody(vlessPacket(), () => { publicCalls++; throw new Error('public fallback used'); }),
+		environment,
+		{ waitUntil() { } }
+	);
+	await waitFor(() => nasCalls.length === 1 && writes.length === 1, 'KV default NAS binding was not used');
+	assert.deepEqual(macCalls, []);
+	await response.body.cancel();
+
+	await assert.rejects(
+		worker.fetch(
+			requestWithBody(vlessPacket(), () => { publicCalls++; throw new Error('public fallback used'); }, 'https://home-egress.example.test/egress=mac/tunnel'),
+			environment,
+			{ waitUntil() { } }
+		),
+		/Unknown egress site: mac/
+	);
+	assert.equal(publicCalls, 0);
+});
+
 test('fails closed on an unknown egress selector', async () => {
 	let macCalls = 0, nasCalls = 0, publicCalls = 0;
 	await assert.rejects(
@@ -430,6 +468,34 @@ test('subscription emits one explicitly selected node per configured egress site
 	}
 	assert.ok(siteCounts.mac > 0);
 	assert.equal(siteCounts.mac, siteCounts.nas);
+});
+
+test('subscription applies managed site order, names, and enabled state', async () => {
+	const environment = {
+		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
+		OFF_LOG: 'true',
+		KV: memoryKV({
+			'egress-sites.json': JSON.stringify({
+				version: 1,
+				defaultSite: 'nas',
+				sites: [
+					{ id: 'nas', name: 'Synology NAS', enabled: true },
+					{ id: 'mac', name: 'Taiwan Mac mini', enabled: false }
+				]
+			})
+		})
+	};
+	const context = { waitUntil() { } };
+	const quickResponse = await worker.fetch(metadataRequest('https://home-egress.example.test/test-key'), environment, context);
+	const subscriptionLocation = quickResponse.headers.get('Location');
+	const subscriptionResponse = await worker.fetch(metadataRequest(`https://home-egress.example.test${subscriptionLocation}`), environment, context);
+	assert.equal(subscriptionResponse.status, 200);
+	const decoded = Buffer.from(await subscriptionResponse.text(), 'base64').toString('utf8');
+	for (const link of decoded.trim().split(/\r?\n/)) {
+		const node = new URL(link);
+		assert.equal(node.searchParams.get('path'), '/egress=nas');
+		assert.match(decodeURIComponent(node.hash.slice(1)), /^Synology NAS · /);
+	}
 });
 
 test('egress selector precedes the chained-proxy segment without corrupting it', async () => {

@@ -6,14 +6,21 @@ KEYCHAIN_ACCOUNT="$(id -un)"
 RELAY_PORT="${HOME_EGRESS_PORT:-19090}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TEMPLATE_PATH="$SCRIPT_DIR/sing-box.json.template"
-DEFAULT_INTERFACE="$(route -n get default | awk '/interface:/{print $2; exit}')"
-LISTEN_ADDRESS="${HOME_EGRESS_LISTEN:-$(ipconfig getifaddr "$DEFAULT_INTERFACE")}"
+LISTEN_ADDRESS="${HOME_EGRESS_LISTEN:-127.0.0.1}"
 BREW_PREFIX="$(brew --prefix)"
 CONFIG_DIR="$BREW_PREFIX/etc/sing-box"
 CONFIG_PATH="$CONFIG_DIR/config.json"
 
-if [ -z "$DEFAULT_INTERFACE" ] || [ -z "$LISTEN_ADDRESS" ]; then
-	printf '%s\n' "Unable to determine the default interface address" >&2
+case "$LISTEN_ADDRESS" in
+	*[!0-9.]*|'') printf '%s\n' "HOME_EGRESS_LISTEN must be an IPv4 address" >&2; exit 1 ;;
+esac
+
+case "$RELAY_PORT" in
+	*[!0-9]*|'') printf '%s\n' "HOME_EGRESS_PORT must be a TCP port" >&2; exit 1 ;;
+esac
+
+if [ "$RELAY_PORT" -lt 1 ] || [ "$RELAY_PORT" -gt 65535 ]; then
+	printf '%s\n' "HOME_EGRESS_PORT must be between 1 and 65535" >&2
 	exit 1
 fi
 
@@ -45,5 +52,5 @@ sing-box check -c "$TEMP_CONFIG"
 install -m 600 "$TEMP_CONFIG" "$CONFIG_PATH"
 brew services restart sing-box >/dev/null
 
-printf 'sing-box relay is listening on %s:%s\n' "$LISTEN_ADDRESS" "$RELAY_PORT"
+printf 'sing-box Trojan is listening on %s:%s\n' "$LISTEN_ADDRESS" "$RELAY_PORT"
 printf 'Site relay credential is stored in macOS Keychain service: %s\n' "$KEYCHAIN_SERVICE"

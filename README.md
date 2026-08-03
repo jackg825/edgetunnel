@@ -161,6 +161,25 @@ Cloudflare 與私網服務，不能取代會建立動態 Internet 連線的本�
 
 ---
 
+### 出口站點管理
+
+完成 `EGRESS_SITES`、Tunnel、VPC binding、private route 和站點專屬
+Worker Secret 佈建後，管理員可由 `/admin` 右下角進入「出口站點」：
+
+- 啟用或停用已佈建站點；
+- 調整訂閱顯示名稱與順序；
+- 設定無 `/egress=` selector 連線所使用的預設出口。
+
+這些覆寫值儲存於現有 `KV` 的 `egress-sites.json`，只包含站點 ID、
+顯示名稱、啟用狀態、順序和預設站點；不寫入 binding、private address、
+Tunnel token 或 relay password。停用的 selector 會直接失敗，不會回退到其他
+地點。Cloudflare KV 是最終一致儲存，變更後不同區域可能會短暫看到舊設定。
+
+新增或移除底層站點仍必須由 Cloudflare Owner 修改 Worker 部署設定；
+不要將 Cloudflare API token 放入 Worker 或 Admin UI。
+
+---
+
 ## 🔧 高级实用技巧
 如需修改 **订阅地址里的TOKEN** 和 **用于节点验证的UUID** ，可通过修改变量
 1. 修改`ADMIN`或`KEY`变量的值，可以随机修改 **订阅地址里的TOKEN** 和 **用于节点验证的UUID**

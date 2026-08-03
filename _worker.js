@@ -1,4 +1,6 @@
-const Version = '2026-08-02 13:23:51';
+import { egressAdminHeaders, injectEgressAdminShortcut, renderEgressAdminPage } from './admin-egress.js';
+
+const Version = '2026-08-02 16:30:00';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
@@ -7,6 +9,7 @@ const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Mat
 const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
 let TCP并发拨号数 = 2, 反代并发拨号数 = 1, 预加载竞速拨号 = false;
+const 出口站点管理KV键 = 'egress-sites.json';
 
 function 读取出口站点配置(env) {
 	const 原始站点配置 = env.EGRESS_SITES;
@@ -41,12 +44,80 @@ function 读取出口站点配置(env) {
 	});
 }
 
-function 获取默认出口站点(出口站点列表, env) {
+function 获取默认出口站点(出口站点列表, env, 默认站点ID = null) {
 	if (出口站点列表.length === 0) return null;
-	const 默认ID = String(env.DEFAULT_EGRESS || 出口站点列表[0].id).trim().toLowerCase();
+	const 默认ID = String(默认站点ID || env.DEFAULT_EGRESS || 出口站点列表[0].id).trim().toLowerCase();
 	const 默认站点 = 出口站点列表.find(站点 => 站点.id === 默认ID);
 	if (!默认站点) throw new Error(`DEFAULT_EGRESS does not match a configured site: ${默认ID}`);
 	return 默认站点;
+}
+
+function 合并出口站点管理配置(静态站点列表, env, 存储配置 = null) {
+	const 静态站点 = new Map(静态站点列表.map(站点 => [站点.id, 站点]));
+	const 已使用ID = new Set(), 管理站点 = [];
+	const 存储站点 = Array.isArray(存储配置?.sites) ? 存储配置.sites : [];
+	for (const 站点设置 of 存储站点) {
+		const id = String(站点设置?.id || '').trim().toLowerCase(), 站点 = 静态站点.get(id);
+		if (!站点 || 已使用ID.has(id)) continue;
+		const name = String(站点设置?.name || '').trim();
+		if (!name || name.length > 64 || typeof 站点设置.enabled !== 'boolean') continue;
+		管理站点.push({ ...站点, name, enabled: 站点设置.enabled });
+		已使用ID.add(id);
+	}
+	for (const 站点 of 静态站点列表) {
+		if (!已使用ID.has(站点.id)) 管理站点.push({ ...站点, enabled: true });
+	}
+	const 已启用站点 = 管理站点.filter(站点 => 站点.enabled);
+	if (已启用站点.length === 0) throw new Error('At least one egress site must remain enabled');
+	const 候选默认ID = String(存储配置?.defaultSite || env.DEFAULT_EGRESS || '').trim().toLowerCase();
+	const 默认站点ID = 已启用站点.some(站点 => 站点.id === 候选默认ID) ? 候选默认ID : 已启用站点[0].id;
+	return { sites: 管理站点, enabledSites: 已启用站点, defaultSite: 默认站点ID };
+}
+
+async function 读取有效出口站点配置(env) {
+	const 静态站点列表 = 读取出口站点配置(env);
+	if (静态站点列表.length === 0) return { sites: [], enabledSites: [], defaultSite: null };
+	if (!env.KV || typeof env.KV.get !== 'function') return 合并出口站点管理配置(静态站点列表, env);
+	try {
+		const 配置文本 = await env.KV.get(出口站点管理KV键);
+		return 合并出口站点管理配置(静态站点列表, env, 配置文本 ? JSON.parse(配置文本) : null);
+	} catch (error) {
+		console.error(`读取${出口站点管理KV键}出错: ${error.message}`);
+		return 合并出口站点管理配置(静态站点列表, env);
+	}
+}
+
+function 验证出口站点管理提交(提交配置, 静态站点列表) {
+	if (!提交配置 || !Array.isArray(提交配置.sites) || 提交配置.sites.length !== 静态站点列表.length) throw new Error('站点清单不完整');
+	const 允许ID = new Set(静态站点列表.map(站点 => 站点.id)), 已使用ID = new Set();
+	const sites = 提交配置.sites.map(站点 => {
+		const id = String(站点?.id || '').trim().toLowerCase(), name = String(站点?.name || '').trim();
+		if (!允许ID.has(id) || 已使用ID.has(id)) throw new Error(`站点 ${id || 'unknown'} 不存在或重复`);
+		if (!name || name.length > 64) throw new Error(`站点 ${id} 的显示名称必须是 1–64 字符`);
+		if (typeof 站点.enabled !== 'boolean') throw new Error(`站点 ${id} 的启用状态无效`);
+		已使用ID.add(id);
+		return { id, name, enabled: 站点.enabled };
+	});
+	const 已启用ID = new Set(sites.filter(站点 => 站点.enabled).map(站点 => 站点.id));
+	const defaultSite = String(提交配置.defaultSite || '').trim().toLowerCase();
+	if (已启用ID.size === 0) throw new Error('至少需要启用一个出口站点');
+	if (!已启用ID.has(defaultSite)) throw new Error('默认出口必须是已启用的站点');
+	return { version: 1, defaultSite, sites };
+}
+
+function 获取出口站点管理摘要(env, 出口配置) {
+	return {
+		defaultSite: 出口配置.defaultSite,
+		sites: 出口配置.sites.map(站点 => {
+			const 站点密钥 = 站点.secretEnv ? String(env[站点.secretEnv] || '') : '';
+			return {
+				id: 站点.id, name: 站点.name, enabled: 站点.enabled,
+				binding: 站点.binding, address: 站点.address, secretEnv: 站点.secretEnv,
+				bindingConfigured: Boolean(env[站点.binding] && typeof env[站点.binding].connect === 'function'),
+				secretConfigured: Boolean(站点.secretEnv && 站点密钥.length >= 16 && 站点密钥.length <= 128 && !/[\r\n]/.test(站点密钥))
+			};
+		})
+	};
 }
 
 // 出口选择器写在路径片段而非查询参数，gRPC 的 serviceName 会丢弃 '?' 之后的内容。
@@ -70,13 +141,13 @@ function 附加出口站点到备注(备注, 出口站点) {
 	return 出口站点 ? `${出口站点.name} · ${备注}` : 备注;
 }
 
-function 应用家庭出口配置(反代上下文, env, url, userID) {
-	const 出口站点列表 = 读取出口站点配置(env);
+function 应用家庭出口配置(反代上下文, env, url, userID, 出口配置) {
+	const 出口站点列表 = 出口配置.enabledSites;
 	if (出口站点列表.length === 0) return 反代上下文;
 	const 请求站点ID = 读取路径出口站点ID(url?.pathname);
 	const 出口站点 = 请求站点ID
 		? 出口站点列表.find(站点 => 站点.id === 请求站点ID)
-		: 获取默认出口站点(出口站点列表, env);
+		: 获取默认出口站点(出口站点列表, env, 出口配置.defaultSite);
 	if (!出口站点) throw new Error(`Unknown egress site: ${请求站点ID}`);
 	const 出口绑定 = env[出口站点.binding];
 	if (!出口绑定 || typeof 出口绑定.connect !== 'function') throw new Error(`${出口站点.binding} VPC binding is required for egress site ${出口站点.id}`);
@@ -151,11 +222,13 @@ export default {
 				if (请求前8总和 === 目标前8总和 && 请求UUID.slice(-12) === 目标UUID.slice(-12)) return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 			}
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
+			const 出口配置 = await 读取有效出口站点配置(env);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID, 出口配置);
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID);
+			const 出口配置 = await 读取有效出口站点配置(env);
+			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID, 出口配置);
 			const referer = request.headers.get('Referer') || '';
 			const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
 			if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -194,7 +267,28 @@ export default {
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
 					// 没有cookie或cookie错误，跳转到/login页面
 					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-					if (访问路径 === 'admin/log.json') {// 读取日志内容
+					if (访问路径 === 'admin/egress') {// 管理已由 owner 完成底层布置的出口站点
+						const 静态站点列表 = 读取出口站点配置(env);
+						if (静态站点列表.length === 0) return new Response(JSON.stringify({ error: '尚未布置 EGRESS_SITES' }), { status: 409, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+						if (request.method === 'GET') {
+							const 出口配置 = await 读取有效出口站点配置(env);
+							return new Response(renderEgressAdminPage(获取出口站点管理摘要(env, 出口配置)), { status: 200, headers: egressAdminHeaders() });
+						}
+						if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, POST' } });
+						if (!contentType.startsWith('application/json')) return new Response(JSON.stringify({ error: '请使用 application/json' }), { status: 415, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+						const 请求来源 = request.headers.get('Origin');
+						if (请求来源 && 请求来源 !== url.origin) return new Response(JSON.stringify({ error: '拒绝跨站请求' }), { status: 403, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+						try {
+							const 提交文本 = await request.text();
+							if (提交文本.length > 16 * 1024) throw new Error('站点设置过大');
+							const 存储配置 = 验证出口站点管理提交(JSON.parse(提交文本), 静态站点列表);
+							await env.KV.put(出口站点管理KV键, JSON.stringify(存储配置, null, 2));
+							const 出口配置 = 合并出口站点管理配置(静态站点列表, env, 存储配置);
+							return new Response(JSON.stringify({ success: true, ...获取出口站点管理摘要(env, 出口配置) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+						} catch (error) {
+							return new Response(JSON.stringify({ error: error.message }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+						}
+					} else if (访问路径 === 'admin/log.json') {// 读取日志内容
 						const 读取日志内容 = await env.KV.get('log.json') || '[]';
 						return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					} else if (区分大小写访问路径 === 'admin/getCloudflareUsage') {// 查询请求量
@@ -381,7 +475,7 @@ export default {
 					}
 
 					ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-					return fetch(Pages静态页面 + '/admin' + url.search);
+					return injectEgressAdminShortcut(await fetch(Pages静态页面 + '/admin' + url.search));
 				} else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
 					const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
 					响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
@@ -398,8 +492,9 @@ export default {
 					]);
 					const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
 					if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
-						config_JSON = await 读取config_JSON(env, host, userID, UA);
-						const 出口站点列表 = 读取出口站点配置(env);
+						const 出口配置 = await 读取有效出口站点配置(env);
+						config_JSON = await 读取config_JSON(env, host, userID, UA, false, 出口配置);
+						const 出口站点列表 = 出口配置.enabledSites;
 						if (url.searchParams.has('ech')) config_JSON.ECH = ['1', 'true'].includes(String(url.searchParams.get('ech')).toLowerCase());
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
@@ -5262,9 +5357,10 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 	}
 }
 
-async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {
+async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, 出口配置 = null) {
 	const _p = 特征码字典[0];
-	const 出口站点列表 = 读取出口站点配置(env), 家庭出口已启用 = 出口站点列表.length > 0;
+	出口配置 ||= await 读取有效出口站点配置(env);
+	const 出口站点列表 = 出口配置.enabledSites, 家庭出口已启用 = 出口站点列表.length > 0;
 	const 家庭入站协议 = String(env.EGRESS_PROTOCOL || env.HOME_PROTOCOL || 'trojan').toLowerCase() === 'vless' ? 'vless' : 'trojan';
 	const host = hostname, Ali_DoH = "https://dns.alidns.com/dns-query", ECH_SNI = "cloudflare-ech.com", 占位符 = '{{IP:PORT}}', 初始化开始时间 = performance.now(), 默认配置JSON = {
 		TIME: new Date().toISOString(),
@@ -5452,7 +5548,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const 最终查询部分 = 反代查询参数 ? (查询部分 ? 查询部分 + '&' + 反代查询参数 : '?' + 反代查询参数) : 查询部分;
 	config_JSON.完整节点路径 = (路径部分 || '/') + (路径部分 && 路径反代参数 ? '/' : '') + 路径反代参数 + 最终查询部分 + (config_JSON.启用0RTT ? (最终查询部分 ? '&' : '?') + 'ed=2560' : '');
 	// 出口选择器并入完整节点路径，确保订阅、LINK 与 Surge 热补丁三处消费方都携带站点标识
-	const 默认出口站点 = 获取默认出口站点(出口站点列表, env);
+	const 默认出口站点 = 获取默认出口站点(出口站点列表, env, 出口配置.defaultSite);
 	config_JSON.完整节点路径 = 附加出口站点到路径(config_JSON.完整节点路径, 默认出口站点);
 
 	if (!config_JSON.TLS分片 && config_JSON.TLS分片 !== null) config_JSON.TLS分片 = null;
