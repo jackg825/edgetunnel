@@ -174,6 +174,8 @@ Worker Secret 佈建後，管理員可由 `/admin` 右下角進入「出口站�
 顯示名稱、啟用狀態、順序和預設站點；不寫入 binding、private address、
 Tunnel token 或 relay password。停用的 selector 會直接失敗，不會回退到其他
 地點。Cloudflare KV 是最終一致儲存，變更後不同區域可能會短暫看到舊設定。
+KV 讀取失敗或管理設定損壞時也會拒絕新連線；只有管理記錄尚不存在時才使用
+部署設定，故障期間不會將已停用站點恢復為啟用。
 
 新增或移除底層站點仍必須由 Cloudflare Owner 修改 Worker 部署設定；
 不要將 Cloudflare API token 放入 Worker 或 Admin UI。
