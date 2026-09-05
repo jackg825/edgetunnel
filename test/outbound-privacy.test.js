@@ -234,3 +234,14 @@ test('third-party HTML cannot grant itself script or same-origin privileges', as
 	assert.equal(response.headers.get('Set-Cookie'), null);
 	assert.equal(response.headers.get('Referrer-Policy'), 'no-referrer');
 });
+
+test('missing session storage never forwards management credentials to camouflage', async t => {
+	t.mock.method(globalThis, 'fetch', async () => assert.fail('management credentials reached a third party'));
+	for (const path of ['/login', '/admin/config.json', '/logout']) {
+		const response = await worker.fetch(request(path, {
+			method: 'POST', headers: { Origin: workerOrigin, Cookie: 'auth=private-cookie' },
+			body: 'password=private-password'
+		}), environment, context);
+		assert.equal(response.status, 503);
+	}
+});
