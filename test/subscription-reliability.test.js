@@ -21,6 +21,7 @@ const context = { waitUntil() { } };
 function request(path, { method = 'GET', body, cookie } = {}) {
 	const headers = new Headers({ 'user-agent': 'Shadowrocket' });
 	if (cookie) headers.set('cookie', cookie);
+	if (method === 'POST') headers.set('origin', 'https://worker.example.test');
 	const result = new Request(`https://worker.example.test${path}`, { method, body, headers });
 	Object.defineProperty(result, 'cf', { value: { colo: 'TPE', country: 'TW', asn: 0 } });
 	return result;
@@ -37,7 +38,8 @@ async function subscriptionEnvironment() {
 		]),
 		KV: {
 			async get(key) { return entries.get(key) ?? null; },
-			async put(key, value) { entries.set(key, value); }
+			async put(key, value) { entries.set(key, value); },
+			async delete(key) { entries.delete(key); }
 		}
 	};
 	const login = await worker.fetch(request('/login', { method: 'POST', body: 'password=test-admin' }), environment, context);

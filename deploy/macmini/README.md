@@ -270,3 +270,43 @@ preserved after the site name, and no flag emoji is added.
 configuration. New deployments should use `EGRESS_SITES`, `DEFAULT_EGRESS`,
 `EGRESS_PROTOCOL`, and one VPC binding per site as shown in
 [`wrangler.example.toml`](../../wrangler.example.toml).
+
+## Management sessions and request privacy
+
+Admin login now issues a random, server-recorded session that expires after
+24 hours. Deploying this change invalidates the old deterministic cookies;
+sign in again with the existing admin password. Client UUIDs, subscriptions,
+and relay credentials do not change. Logout deletes the presented session
+record before reporting success, including after a browser user-agent change.
+Changing `ADMIN` or `KEY` also invalidates existing admin sessions.
+
+Session records use the existing KV binding. Expiration is checked on every
+authenticated request, and a KV failure denies access. Logout revocation is
+subject to [KV propagation](https://developers.cloudflare.com/kv/concepts/how-kv-works/)
+between Cloudflare locations; it is not globally instantaneous. No additional
+session cache or storage binding is introduced.
+
+Login, logout, reset, and configuration writes require a `POST` with an
+`Origin` exactly matching the Worker origin. Browser controls supply this;
+API clients must supply it explicitly. `GET /admin/init` returns `405` without
+resetting data, and `GET /logout` displays a confirmation form. Administrative
+configuration reads do not initialize missing configuration records.
+
+When `URL` selects a third-party camouflage site, only public content headers
+are forwarded. Authentication headers and cookies are omitted, response
+cookies are removed, and redirects are not followed on the server. Third-party
+documents receive a [CSP sandbox](https://www.w3.org/TR/CSP/#directive-sandbox)
+without script or same-origin privileges; interactive camouflage pages that
+need JavaScript or forms will no longer work. The built-in nginx page and
+authenticated management pages are unaffected.
+
+`OFF_LOG=true` or `OFF_LOG=1` disables both Telegram notifications and KV
+logging. When logging is enabled, URL fields retain only the origin, excluding
+paths, query strings, userinfo, and fragments. Existing KV URL fields are
+sanitized on the next enabled log write; messages already sent to Telegram are
+not recalled.
+
+gRPC accepts uncompressed protobuf frames up to **1 MiB**, including protobuf
+framing. Oversized lengths, invalid protobuf fields, and truncated frames close
+the request and any relay connection. Multiple frames and fragmented HTTP
+uploads remain supported.
