@@ -111,7 +111,8 @@ while ! lsof -nP -a -p "$PROBE_PID" "-iTCP@127.0.0.1:$PROBE_PORT" -sTCP:LISTEN >
 done
 
 curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://127.0.0.1:$PROBE_PORT/" >/dev/null
-curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://$LAN_ADDRESS:$LAN_PROBE_PORT/" >/dev/null
+# Avoid macOS failures when a local TCP connection uses the same LAN source and destination.
+curl --interface 127.0.0.1 --noproxy '*' --fail --silent --show-error --max-time 3 "http://$LAN_ADDRESS:$LAN_PROBE_PORT/" >/dev/null
 
 DIRECT_TRACE="$(curl --ipv4 --noproxy '*' --silent --show-error --max-time 15 https://www.cloudflare.com/cdn-cgi/trace)"
 WORKER_TRACE="$(curl --noproxy '' --silent --show-error --max-time 20 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
