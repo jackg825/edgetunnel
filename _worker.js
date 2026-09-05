@@ -1,4 +1,5 @@
-import { egressAdminHeaders, injectEgressAdminShortcut, renderEgressAdminPage } from './admin-egress.js';
+import { adminLogoutHeaders, egressAdminHeaders, injectEgressAdminShortcut, renderEgressAdminPage, renderAdminLogoutPage } from './admin-egress.js';
+import { adminSessionCookie, createAdminSession, isSameOriginAdminRequest, readAdminSession, revokeAdminSession } from './admin-session.js';
 
 const Version = '2026-08-11 14:45:22';
 let 缓存SOCKS5白名单 = null, 调试日志打印 = false;
@@ -199,6 +200,7 @@ export default {
 		const hosts = env.HOST ? (await 整理成数组(env.HOST)).map(h => h.toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0]) : [url.hostname];
 		const host = hosts[0];
 		const 访问路径 = url.pathname.slice(1).toLowerCase();
+		const 管理路径 = ['login', 'logout', 'admin'].includes(访问路径) || 访问路径.startsWith('admin/');
 		调试日志打印 = ['1', 'true'].includes(env.DEBUG) || 调试日志打印;
 		预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 预加载竞速拨号;
 		反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 反代并发拨号数);
@@ -233,7 +235,7 @@ export default {
 			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID, 出口配置);
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
-		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/叉HTTP代理
+		} else if (管理员密码 && !管理路径 && request.method === 'POST') {// gRPC/叉HTTP代理
 			const 出口配置 = await 读取有效出口站点配置(env);
 			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID, 出口配置);
 			const { 头: 本机Padding头, 键: 本机Padding键 } = 获取叉HTTPPadding标识(userID);
@@ -249,33 +251,42 @@ export default {
 		} else {
 			if (url.protocol === 'http:') return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
 			if (!管理员密码) return fetch(Pages静态页面 + '/noADMIN').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }) });
+			if (管理路径 && (!env.KV || typeof env.KV.get !== 'function')) return new Response('Authentication unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
 			if (env.KV && typeof env.KV.get === 'function') {
 				const 区分大小写访问路径 = url.pathname.slice(1);
+				if (管理路径 && !['GET', 'HEAD', 'POST'].includes(request.method)) return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, HEAD, POST', 'Cache-Control': 'no-store' } });
+				if (管理路径 && request.method === 'POST' && !isSameOriginAdminRequest(request)) return new Response('拒绝跨站或缺少来源的管理请求', { status: 403, headers: { 'Cache-Control': 'no-store' } });
+				let 管理会话 = null;
+				if (管理路径 || 访问路径 === 'locations') {
+					try { 管理会话 = await readAdminSession(request, env, 管理员密码, 加密秘钥); }
+					catch { return new Response('Authentication unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
+				}
 				if (区分大小写访问路径 === 加密秘钥 && 加密秘钥 !== '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改') {//快速订阅
 					const params = new URLSearchParams(url.search);
 					params.set('token', await MD5MD5(host + userID));
 					return new Response('重定向中...', { status: 302, headers: { 'Location': `/sub?${params.toString()}` } });
 				} else if (访问路径 === 'login') {//处理登录页面和登录请求
-					const cookies = request.headers.get('Cookie') || '';
-					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-					if (authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
+					if (管理会话 && request.method !== 'POST') return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin', 'Cache-Control': 'no-store' } });
 					if (request.method === 'POST') {
 						const formData = await request.text();
 						const params = new URLSearchParams(formData);
 						const 输入密码 = params.get('password');
 						if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
-							// 密码正确，设置cookie并返回成功标记
-							const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-							响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Lax`);
-							return 响应;
+							try {
+								await revokeAdminSession(request, env);
+								const token = await createAdminSession(request, env, 管理员密码, 加密秘钥);
+								return new Response(JSON.stringify({ success: true }), { status: 200, headers: {
+									'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': adminSessionCookie(token)
+								} });
+							} catch { return new Response('Authentication unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
 						}
+						return new Response(JSON.stringify({ success: false }), { status: 401, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
 					}
 					return fetch(Pages静态页面 + '/login');
 				} else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
-					const cookies = request.headers.get('Cookie') || '';
-					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
 					// 没有cookie或cookie错误，跳转到/login页面
-					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+					if (!管理会话) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login', 'Cache-Control': 'no-store' } });
+					if (访问路径 === 'admin/init' && request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST', 'Cache-Control': 'no-store' } });
 					if (访问路径 === 'admin/egress') {// 管理已由 owner 完成底层布置的出口站点
 						const 静态站点列表 = 读取出口站点配置(env);
 						if (静态站点列表.length === 0) return new Response(JSON.stringify({ error: '尚未布置 EGRESS_SITES' }), { status: 409, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -285,8 +296,6 @@ export default {
 						}
 						if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, POST' } });
 						if (!contentType.startsWith('application/json')) return new Response(JSON.stringify({ error: '请使用 application/json' }), { status: 415, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-						const 请求来源 = request.headers.get('Origin');
-						if (请求来源 && 请求来源 !== url.origin) return new Response(JSON.stringify({ error: '拒绝跨站请求' }), { status: 403, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 						try {
 							const 提交文本 = await request.text();
 							if (提交文本.length > 16 * 1024) throw new Error('站点设置过大');
@@ -393,7 +402,7 @@ export default {
 						return new Response(JSON.stringify(检测代理响应, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					}
 
-					config_JSON = await 读取config_JSON(env, host, userID, UA);
+					config_JSON = await 读取config_JSON(env, host, userID, UA, false, null, false);
 
 					if (访问路径 === 'admin/init') {// 重置配置为默认值
 						try {
@@ -485,10 +494,17 @@ export default {
 
 					ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
 					return injectEgressAdminShortcut(await fetch(Pages静态页面 + '/admin' + url.search));
-				} else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
-					const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-					响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
-					return 响应;
+				} else if (访问路径 === 'logout') {
+					if (request.method !== 'POST') return new Response(renderAdminLogoutPage(), { headers: adminLogoutHeaders() });
+					try { await revokeAdminSession(request, env); }
+					catch { return new Response('Logout unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
+					const 返回JSON = (request.headers.get('Accept') || '').includes('application/json');
+					return new Response(返回JSON ? JSON.stringify({ success: true }) : '重定向中...', { status: 返回JSON ? 200 : 303, headers: {
+						'Content-Type': 返回JSON ? 'application/json;charset=utf-8' : 'text/plain;charset=utf-8',
+						'Cache-Control': 'no-store', 'Set-Cookie': adminSessionCookie(), ...(!返回JSON ? { Location: '/login' } : {})
+					} });
+				} else if (uuidRegex.test(访问路径)) {
+					return new Response('重定向中...', { status: 302, headers: { Location: '/login', 'Cache-Control': 'no-store' } });
 				} else if (访问路径 === 'sub') {//处理订阅请求
 					const 订阅TOKEN = await MD5MD5(host + userID), 作为优选订阅生成器 = ['1', 'true'].includes(env.BEST_SUB) && url.searchParams.get('host') === 'example.com' && url.searchParams.get('uuid') === '00000000-0000-4000-8000-000000000000' && UA.toLowerCase().includes('tunnel (https://github.com/' + 特征码字典[1] + '/edge');
 					const 请求TOKEN = url.searchParams.get('token');
@@ -692,9 +708,7 @@ export default {
 						return new Response(订阅内容, { status: 200, headers: responseHeaders });
 					}
 				} else if (访问路径 === 'locations') {//反代locations列表
-					const cookies = request.headers.get('Cookie') || '';
-					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-					if (authCookie && authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
+					if (管理会话) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
 				} else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
 			} else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }) });
 		}
@@ -708,19 +722,36 @@ export default {
 		}
 		if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
 		try {
-			const 反代URL = new URL(伪装页URL), 新请求头 = new Headers(request.headers);
+			const 反代URL = new URL(伪装页URL), 新请求头 = new Headers();
+			// 伪装源只接收公开内容协商头，不接收本站 cookie、认证或应用私有头。
+			for (const 名称 of ['Accept', 'Accept-Language', 'Accept-Encoding', 'Content-Type', 'Range', 'If-Range', 'If-None-Match', 'If-Modified-Since', 'User-Agent']) {
+				if (request.headers.has(名称)) 新请求头.set(名称, request.headers.get(名称));
+			}
 			新请求头.set('Host', 反代URL.host);
 			新请求头.set('Referer', 反代URL.origin);
 			新请求头.set('Origin', 反代URL.origin);
 			if (!新请求头.has('User-Agent') && UA && UA !== 'null') 新请求头.set('User-Agent', UA);
-			const 反代响应 = await fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, cf: request.cf });
+			const 反代响应 = await fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, redirect: 'manual', cf: request.cf });
+			const 响应头 = new Headers(反代响应.headers);
+			响应头.delete('Set-Cookie');
+			响应头.delete('Set-Cookie2');
+			响应头.set('Referrer-Policy', 'no-referrer');
+			// 第三方 HTML 不得以管理站点的来源执行脚本或访问登录态。
+			响应头.set('Content-Security-Policy', 'sandbox');
+			const 重定向地址 = 响应头.get('Location');
+			if (重定向地址) {
+				const 重定向URL = new URL(重定向地址, 反代URL.origin + url.pathname + url.search);
+				if (重定向URL.origin === 反代URL.origin) 响应头.set('Location', url.origin + 重定向URL.pathname + 重定向URL.search + 重定向URL.hash);
+			}
 			const 内容类型 = 反代响应.headers.get('content-type') || '';
 			// 只处理文本类型的响应
-			if (/text|javascript|json|xml/.test(内容类型)) {
+			if (反代响应.body && /text|javascript|json|xml/.test(内容类型)) {
 				const 响应内容 = (await 反代响应.text()).replaceAll(反代URL.host, url.host);
-				return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
+				响应头.set('Cache-Control', 'no-store');
+				响应头.delete('Content-Length');
+				return new Response(响应内容, { status: 反代响应.status, statusText: 反代响应.statusText, headers: 响应头 });
 			}
-			return 反代响应;
+			return new Response(反代响应.body, { status: 反代响应.status, statusText: 反代响应.statusText, headers: 响应头 });
 		} catch (error) { }
 		return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
 	}
@@ -1314,38 +1345,58 @@ async function 处理gRPC请求(request, yourUUID, 反代上下文 = {}) {
 						请求中断();
 						return;
 					}
-					let pending = new Uint8Array(0);
+					// Bound each protobuf frame to 1 MiB before allocating its payload.
+					const 最大gRPC消息字节 = 1024 * 1024;
+					let pending = new Uint8Array(5), pendingBytes = 0, grpcLen = null;
 					while (true) {
 						const { done, value } = await reader.read();
-						if (done) break;
+						if (done) {
+							if (pendingBytes || grpcLen !== null) throw new Error('incomplete gRPC frame');
+							break;
+						}
 						if (!value || value.byteLength === 0) continue;
 						const 当前块 = value instanceof Uint8Array ? value : new Uint8Array(value);
-						const merged = new Uint8Array(pending.length + 当前块.length);
-						merged.set(pending, 0);
-						merged.set(当前块, pending.length);
-						pending = merged;
-						while (pending.byteLength >= 5) {
-							const grpcLen = ((pending[1] << 24) >>> 0) | (pending[2] << 16) | (pending[3] << 8) | pending[4];
-							const frameSize = 5 + grpcLen;
-							if (pending.byteLength < frameSize) break;
-							const grpcPayload = pending.subarray(5, frameSize);
-							pending = pending.slice(frameSize);
-							if (!grpcPayload.byteLength) continue;
-							let payload = grpcPayload;
-							if (payload.byteLength >= 2 && payload[0] === 0x0a) {
-								let shift = 0;
-								let offset = 1;
-								let varint有效 = false;
-								while (offset < payload.length) {
-									const current = payload[offset++];
-									if ((current & 0x80) === 0) {
-										varint有效 = true;
-										break;
-									}
-									shift += 7;
-									if (shift > 35) break;
+						let cursor = 0;
+						while (cursor < 当前块.byteLength) {
+							const copyLength = Math.min(pending.byteLength - pendingBytes, 当前块.byteLength - cursor);
+							pending.set(当前块.subarray(cursor, cursor + copyLength), pendingBytes);
+							pendingBytes += copyLength;
+							cursor += copyLength;
+							if (pendingBytes < pending.byteLength) continue;
+							if (grpcLen === null) {
+								if (pending[0] !== 0) throw new Error('gRPC compression is not supported');
+								grpcLen = new DataView(pending.buffer, pending.byteOffset, 5).getUint32(1);
+								if (grpcLen > 最大gRPC消息字节) throw new Error('gRPC frame is too large');
+								pendingBytes = 0;
+								if (grpcLen === 0) grpcLen = null;
+								else pending = new Uint8Array(grpcLen);
+								continue;
+							}
+							const grpcPayload = pending;
+							pending = new Uint8Array(5);
+							pendingBytes = 0;
+							grpcLen = null;
+							const 数据字段 = [];
+							let offset = 0, payloadLength = 0;
+							while (offset < grpcPayload.byteLength) {
+								if (grpcPayload[offset++] !== 0x0a) throw new Error('unsupported gRPC protobuf field');
+								let fieldLength = 0, varint完整 = false;
+								for (let index = 0; index < 5; index++) {
+									if (offset === grpcPayload.byteLength) throw new Error('incomplete protobuf length');
+									const current = grpcPayload[offset++];
+									if (index === 4 && current > 0x0f) throw new Error('protobuf length overflow');
+									fieldLength += (current & 0x7f) * (2 ** (index * 7));
+									if ((current & 0x80) === 0) { varint完整 = true; break; }
 								}
-								if (varint有效) payload = payload.subarray(offset);
+								if (!varint完整 || fieldLength > grpcPayload.byteLength - offset) throw new Error('invalid protobuf length');
+								if (fieldLength) 数据字段.push(grpcPayload.subarray(offset, offset + fieldLength));
+								payloadLength += fieldLength;
+								offset += fieldLength;
+							}
+							const payload = 数据字段.length === 1 ? 数据字段[0] : new Uint8Array(payloadLength);
+							if (数据字段.length > 1) {
+								let payloadOffset = 0;
+								for (const field of 数据字段) { payload.set(field, payloadOffset); payloadOffset += field.byteLength; }
 							}
 							if (!payload.byteLength) continue;
 							if (isDnsQuery) {
@@ -5659,10 +5710,19 @@ function Surge订阅配置文件热补丁(content, url, config_JSON, 出口站�
 	return 输出内容;
 }
 
+function 获取日志URL摘要(地址) {
+	try {
+		// 路径同样可能包含 UUID、代理账号或嵌套订阅 URL，只保留站点来源。
+		const 来源 = new URL(地址).origin;
+		return 来源 === 'null' ? '[redacted]' : 来源 + '/';
+	} catch { return '[redacted]'; }
+}
+
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON, 是否写入KV日志 = true) {
+	if (['1', 'true'].includes(String(env.OFF_LOG).trim().toLowerCase())) return;
 	try {
 		const 当前时间 = new Date();
-		const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
+		const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: 获取日志URL摘要(request.url), UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
 		if (config_JSON.TG.启用) {
 			try {
 				const TG_TXT = await env.KV.get('tg.json');
@@ -5689,19 +5749,27 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
 						}
 					});
 				}
-			} catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
+			} catch { console.error('Telegram 日志发送失败') }
 		}
-		是否写入KV日志 = ['1', 'true'].includes(env.OFF_LOG) ? false : 是否写入KV日志;
 		if (!是否写入KV日志) return;
 		let 日志数组 = [];
 		const 现有日志 = await env.KV.get('log.json'), KV容量限制 = 4;//MB
 		if (现有日志) {
 			try {
 				日志数组 = JSON.parse(现有日志);
+				let 历史URL已清理 = false;
+				if (Array.isArray(日志数组)) 日志数组 = 日志数组.map(日志 => {
+					const URL = 获取日志URL摘要(日志.URL);
+					if (URL !== 日志.URL) 历史URL已清理 = true;
+					return { ...日志, URL };
+				});
 				if (!Array.isArray(日志数组)) { 日志数组 = [日志内容] }
 				else if (请求类型 !== "Get_SUB") {
 					const 三十分钟前时间戳 = 当前时间.getTime() - 30 * 60 * 1000;
-					if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === request.url && log.UA === (request.headers.get('User-Agent') || 'Unknown') && log.TIME >= 三十分钟前时间戳)) return;
+					if (日志数组.some(log => log.TYPE === 请求类型 && log.IP === 访问IP && log.URL === 日志内容.URL && log.UA === 日志内容.UA && log.TIME >= 三十分钟前时间戳)) {
+						if (历史URL已清理) await env.KV.put('log.json', JSON.stringify(日志数组, null, 2));
+						return;
+					}
 					日志数组.push(日志内容);
 					while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
 				} else {
@@ -5711,7 +5779,7 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
 			} catch (e) { 日志数组 = [日志内容] }
 		} else { 日志数组 = [日志内容] }
 		await env.KV.put('log.json', JSON.stringify(日志数组, null, 2));
-	} catch (error) { console.error(`日志记录失败: ${error.message}`) }
+	} catch { console.error('日志记录失败') }
 }
 
 function 掩码敏感信息(文本, 前缀长度 = 3, 后缀长度 = 2) {
@@ -5927,7 +5995,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 	}
 }
 
-async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, 出口配置 = null) {
+async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, 出口配置 = null, 允许初始化写入 = true) {
 	let config_JSON;
 	const _p = 特征码字典[0];
 	出口配置 ||= await 读取有效出口站点配置(env);
@@ -6036,12 +6104,13 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	try {
 		let configJSON = await env.KV.get('config.json');
 		if (!configJSON || 重置配置 == true) {
-			await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
+			if (重置配置 || 允许初始化写入) await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
 			config_JSON = 默认配置JSON;
 		} else {
 			config_JSON = JSON.parse(configJSON);
 		}
 	} catch (error) {
+		if (重置配置) throw error;
 		console.error(`读取config_JSON出错: ${error.message}`);
 		config_JSON = 默认配置JSON;
 	}
@@ -6141,7 +6210,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	try {
 		const TG_TXT = await env.KV.get('tg.json');
 		if (!TG_TXT) {
-			await env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2));
+			if (允许初始化写入) await env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2));
 		} else {
 			const TG_JSON = JSON.parse(TG_TXT);
 			config_JSON.TG.ChatID = TG_JSON.ChatID ? TG_JSON.ChatID : null;
@@ -6156,7 +6225,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	try {
 		const CF_TXT = await env.KV.get('cf.json');
 		if (!CF_TXT) {
-			await env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2));
+			if (允许初始化写入) await env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2));
 		} else {
 			const CF_JSON = JSON.parse(CF_TXT);
 			if (CF_JSON.UsageAPI) {

@@ -97,7 +97,10 @@ export function renderEgressAdminPage(configuration) {
 			};
 			const response = await fetch('/admin/egress', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				credentials: 'same-origin',
+				cache: 'no-store',
+				redirect: 'error',
+				headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
 				body: JSON.stringify(payload)
 			});
 			const result = await response.json();
@@ -128,11 +131,83 @@ export function egressAdminHeaders() {
 	};
 }
 
+export function renderAdminLogoutPage() {
+	return `<!doctype html>
+<html lang="zh-Hant">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<meta name="robots" content="noindex,nofollow">
+	<title>確認登出</title>
+	<style>body{font:16px/1.6 system-ui;margin:15vh auto;padding:0 24px;max-width:480px}button{font:inherit;padding:8px 20px;cursor:pointer}a{margin-left:20px}</style>
+</head>
+<body>
+	<h1>確認登出</h1>
+	<p>按下登出後，此次管理登入將失效。</p>
+	<form method="POST" action="/logout">
+		<button type="submit">登出</button><a href="/admin">返回後台</a>
+	</form>
+</body>
+</html>`;
+}
+
+export function adminLogoutHeaders() {
+	return {
+		...egressAdminHeaders(),
+		'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	};
+}
+
+const adminActionScript = `<script id="edgetunnel-admin-actions" data-cfasync="false">
+(() => {
+	'use strict';
+	const report = (message, type) => {
+		if (typeof window.showToast === 'function') window.showToast(message, type);
+		else window.alert(message);
+	};
+	const postAction = async path => {
+		const response = await fetch(path, {
+			method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+			headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+			body: '{}'
+		});
+		if (!response.ok) {
+			const result = await response.json().catch(() => ({}));
+			throw new Error(result.error || result.msg || '請求失敗（HTTP ' + response.status + '）');
+		}
+		return response.json();
+	};
+	window.confirmReset = async () => {
+		try {
+			await postAction('/admin/init');
+			if (typeof window.closeResetModal === 'function') window.closeResetModal();
+			report('配置已重置為預設值', 'success');
+			setTimeout(() => window.location.reload(), 1000);
+		} catch (error) {
+			report('重置失敗：' + error.message, 'error');
+		}
+	};
+	window.logout = async () => {
+		try {
+			const result = await postAction('/logout');
+			if (result.success !== true) throw new Error('伺服器未確認登出完成');
+			window.location.replace('/login');
+		} catch (error) {
+			report('登出失敗：' + error.message, 'error');
+		}
+	};
+})();
+</script>`;
+
 export async function injectEgressAdminShortcut(response) {
 	if (!response?.ok || !(response.headers.get('Content-Type') || '').toLowerCase().includes('text/html')) return response;
 	const html = await response.text();
 	const shortcut = '<a href="/admin/egress" aria-label="出口站點管理" style="position:fixed;right:18px;bottom:18px;z-index:2147483647;padding:10px 14px;border-radius:999px;background:#2563eb;color:#fff;text-decoration:none;font:600 14px system-ui;box-shadow:0 8px 24px #0006">出口站點</a>';
-	const body = html.includes('href="/admin/egress"') ? html : (/<\/body>/i.test(html) ? html.replace(/<\/body>/i, shortcut + '</body>') : html + shortcut);
+	const additions = (html.includes('href="/admin/egress"') ? '' : shortcut)
+		+ (html.includes('id="edgetunnel-admin-actions"') ? '' : adminActionScript);
+	// The upstream page contains complete HTML documents inside inert templates.
+	const bodyEnd = html.toLowerCase().lastIndexOf('</body>');
+	const body = bodyEnd === -1 ? html + additions : html.slice(0, bodyEnd) + additions + html.slice(bodyEnd);
 	const headers = new Headers(response.headers);
 	headers.set('Cache-Control', 'no-store');
 	headers.delete('Content-Encoding');
