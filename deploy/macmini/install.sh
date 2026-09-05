@@ -50,7 +50,11 @@ jq \
 
 sing-box check -c "$TEMP_CONFIG"
 install -m 600 "$TEMP_CONFIG" "$CONFIG_PATH"
-brew services restart sing-box >/dev/null
+if [ -f /Library/LaunchDaemons/com.edgetunnel.macmini.sing-box.plist ]; then
+	sudo launchctl kickstart -k system/com.edgetunnel.macmini.sing-box
+else
+	brew services restart sing-box >/dev/null
+fi
 
 printf 'sing-box Trojan is listening on %s:%s\n' "$LISTEN_ADDRESS" "$RELAY_PORT"
 printf 'Site relay credential is stored in macOS Keychain service: %s\n' "$KEYCHAIN_SERVICE"

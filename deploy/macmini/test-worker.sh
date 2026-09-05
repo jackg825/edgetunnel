@@ -72,9 +72,9 @@ sing-box run -c "$CLIENT_CONFIG" > "$CLIENT_LOG" 2>&1 &
 CLIENT_PID=$!
 
 attempt=0
-while ! lsof -nP -iTCP:"$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+while ! lsof -nP -a -p "$CLIENT_PID" "-iTCP@127.0.0.1:$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 50 ]; then
+	if ! kill -0 "$CLIENT_PID" 2>/dev/null || [ "$attempt" -ge 50 ]; then
 		printf '%s\n' "Worker test client did not start" >&2
 		cat "$CLIENT_LOG" >&2
 		exit 1
@@ -100,9 +100,9 @@ node -e '
 PROBE_PID=$!
 
 attempt=0
-while ! lsof -nP -iTCP:"$PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1 || ! lsof -nP -iTCP:"$LAN_PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+while ! lsof -nP -a -p "$PROBE_PID" "-iTCP@127.0.0.1:$PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1 || ! lsof -nP -a -p "$PROBE_PID" "-iTCP@$LAN_ADDRESS:$LAN_PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 50 ]; then
+	if ! kill -0 "$PROBE_PID" 2>/dev/null || [ "$attempt" -ge 50 ]; then
 		printf '%s\n' "Local isolation probe did not start" >&2
 		cat "$PROBE_LOG" >&2
 		exit 1
@@ -110,11 +110,11 @@ while ! lsof -nP -iTCP:"$PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1 || ! lsof -nP 
 	sleep 0.1
 done
 
-curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:$PROBE_PORT/" >/dev/null
-curl --fail --silent --show-error --max-time 3 "http://$LAN_ADDRESS:$LAN_PROBE_PORT/" >/dev/null
+curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://127.0.0.1:$PROBE_PORT/" >/dev/null
+curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://$LAN_ADDRESS:$LAN_PROBE_PORT/" >/dev/null
 
-DIRECT_TRACE="$(curl --silent --show-error --max-time 15 https://www.cloudflare.com/cdn-cgi/trace)"
-WORKER_TRACE="$(curl --silent --show-error --max-time 20 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
+DIRECT_TRACE="$(curl --ipv4 --noproxy '*' --silent --show-error --max-time 15 https://www.cloudflare.com/cdn-cgi/trace)"
+WORKER_TRACE="$(curl --noproxy '' --silent --show-error --max-time 20 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
 DIRECT_IP="$(printf '%s\n' "$DIRECT_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 WORKER_IP="$(printf '%s\n' "$WORKER_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 WORKER_LOCATION="$(printf '%s\n' "$WORKER_TRACE" | awk -F= '$1 == "loc" { print $2 }')"
@@ -125,17 +125,17 @@ if [ -z "$DIRECT_IP" ] || [ "$DIRECT_IP" != "$WORKER_IP" ]; then
 	exit 1
 fi
 
-if curl --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://127.0.0.1:$PROBE_PORT/"; then
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://127.0.0.1:$PROBE_PORT/"; then
 	printf '%s\n' "Worker egress reached a loopback-only service" >&2
 	exit 1
 fi
 
-if curl --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://localhost:$PROBE_PORT/"; then
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://localhost:$PROBE_PORT/"; then
 	printf '%s\n' "Worker egress reached a local service through a hostname" >&2
 	exit 1
 fi
 
-if curl --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://$LAN_ADDRESS:$LAN_PROBE_PORT/"; then
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://$LAN_ADDRESS:$LAN_PROBE_PORT/"; then
 	printf '%s\n' "Worker egress reached a LAN-bound service" >&2
 	exit 1
 fi

@@ -5,7 +5,7 @@ TUNNEL_NAME="${HOME_EGRESS_TUNNEL_NAME:-edgetunnel-macmini-egress}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TEMPLATE_PATH="$SCRIPT_DIR/cloudflared-config.json.template"
 CLOUDFLARED_DIR="$HOME/.cloudflared"
-CONFIG_PATH="$CLOUDFLARED_DIR/config.yml"
+CONFIG_PATH="$CLOUDFLARED_DIR/edgetunnel-macmini.json"
 ROUTE_CIDR="${HOME_EGRESS_ROUTE_CIDR:-127.0.0.1/32}"
 
 if ! wrangler whoami >/dev/null 2>&1; then
@@ -37,12 +37,14 @@ if [ ! -f "$CREDENTIALS_PATH" ]; then
 	exit 1
 fi
 
+TEMP_CONFIG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-cloudflared.XXXXXX")"
+trap 'rm -f "$TEMP_CONFIG"' EXIT HUP INT TERM
 jq \
 	--arg tunnel "$TUNNEL_ID" \
 	--arg credentials "$CREDENTIALS_PATH" \
 	'.tunnel = $tunnel | ."credentials-file" = $credentials' \
-	"$TEMPLATE_PATH" > "$CONFIG_PATH"
-chmod 600 "$CONFIG_PATH"
+	"$TEMPLATE_PATH" > "$TEMP_CONFIG"
+install -m 600 "$TEMP_CONFIG" "$CONFIG_PATH"
 
 if ! cloudflared tunnel route ip show --output json | jq -e --arg cidr "$ROUTE_CIDR" --arg tunnel "$TUNNEL_ID" '(. // [])[] | select(.network == $cidr and .tunnel_id == $tunnel)' >/dev/null; then
 	cloudflared tunnel route ip add "$ROUTE_CIDR" "$TUNNEL_ID" >/dev/null
