@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID, webcrypto } from 'node:crypto';
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
+
+beforeEach(context => {
+	context.mock.method(globalThis, 'fetch', async input => {
+		if (String(input).startsWith('https://raw.githubusercontent.com/')) return new Response('104.16.0.0/13');
+		throw new Error(`Unexpected external request in unit test: ${input}`);
+	});
+});
 
 const subtle = {
 	async digest(algorithm, data) {
@@ -285,6 +292,62 @@ test('KV site management changes the default and fails closed for a disabled sel
 	assert.equal(publicCalls, 0);
 });
 
+test('KV failure cannot reactivate a disabled site or change the managed default', async () => {
+	const calls = [];
+	const environment = multiSiteEnvironment(
+		() => { calls.push('mac'); throw new Error('Mac binding used'); },
+		() => { calls.push('nas'); throw new Error('NAS binding used'); }
+	);
+	const managedSettings = JSON.stringify({
+		version: 1, defaultSite: 'nas', sites: [
+			{ id: 'mac', name: 'Mac', enabled: false },
+			{ id: 'nas', name: 'NAS', enabled: true }
+		]
+	});
+	environment.KV = memoryKV({ 'egress-sites.json': managedSettings });
+	const requestFor = path => requestWithBody(vlessPacket(), () => { calls.push('public'); }, `https://home-egress.example.test${path}`);
+	await assert.rejects(worker.fetch(requestFor('/egress=mac'), environment, { waitUntil() { } }), /Unknown egress site/);
+	environment.KV.get = async () => { throw new Error('simulated KV outage'); };
+	for (const path of ['/egress=mac', '/']) {
+		await assert.rejects(worker.fetch(requestFor(path), environment, { waitUntil() { } }), /Egress site configuration is unavailable/);
+	}
+	assert.deepEqual(calls, []);
+});
+
+test('invalid stored egress settings fail closed before any relay connection', async () => {
+	const calls = [];
+	const environment = multiSiteEnvironment(() => calls.push('mac'), () => calls.push('nas'));
+	for (const stored of ['', '{', 'null', '{}', JSON.stringify({ version: 1, sites: [] }), JSON.stringify({
+		version: 1, defaultSite: 'mac', sites: [{ id: 'mac', name: 'Mac', enabled: 'false' }]
+	}), JSON.stringify({
+		version: 1, defaultSite: '', sites: [{ id: '', name: 'Invalid site', enabled: true }]
+	})]) {
+		environment.KV = memoryKV({ 'egress-sites.json': stored });
+		await assert.rejects(worker.fetch(
+			requestWithBody(vlessPacket(), () => calls.push('public')),
+			environment, { waitUntil() { } }
+		), /Egress site configuration is unavailable/);
+	}
+	assert.deepEqual(calls, []);
+});
+
+test('an absent management record still permits initial provisioning', async () => {
+	const calls = [], writes = [];
+	const environment = multiSiteEnvironment(
+		() => { calls.push('mac'); return fakeSocket(writes); },
+		() => { calls.push('nas'); return fakeSocket(writes); }
+	);
+	environment.KV = memoryKV();
+	const response = await worker.fetch(
+		requestWithBody(vlessPacket(), () => calls.push('public')),
+		environment, { waitUntil() { } }
+	);
+	assert.equal(response.status, 200);
+	assert.deepEqual(calls, ['mac']);
+	assert.deepEqual(writes[0], trojanPacket({ authPassword: macRelayPassword }));
+	await response.body.cancel();
+});
+
 test('fails closed on an unknown egress selector', async () => {
 	let macCalls = 0, nasCalls = 0, publicCalls = 0;
 	await assert.rejects(
@@ -541,12 +604,13 @@ test('egress selector precedes the chained-proxy segment without corrupting it',
 	}
 });
 
-test('Surge hot patch keeps the egress selector in the injected ws-path', async () => {
+test('single-site Surge hot patch keeps the egress selector in the injected ws-path', async () => {
 	const environment = {
 		...multiSiteEnvironment(() => fakeSocket([]), () => fakeSocket([])),
 		OFF_LOG: 'true',
 		KV: memoryKV()
 	};
+	environment.EGRESS_SITES = JSON.stringify(JSON.parse(environment.EGRESS_SITES).filter(site => site.id === 'mac'));
 	const context = { waitUntil() { } };
 	const quickResponse = await worker.fetch(
 		metadataRequest('https://home-egress.example.test/test-key'),
