@@ -67,6 +67,20 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
 - 調整節點後必須在 Shadowrocket 主動更新訂閱；畫面仍顯示舊節點通常是客戶端
   快取，不代表 KV 沒更新。
 
+目前訂閱的隨機 IP 來自運營商 CIDR，名稱中的「優選」不是本次實測排名。
+正式入口先保留少量經測試的 443 候選，再按中國端結果調整 `ADD.txt`；不要
+根據節點名稱推斷城市或品質。每次比較固定出口站點、目的網站、客戶端版本及
+測試時段，逐一改變入口或 ECH，至少記錄：
+
+| 中國端網路 | 入口與 ECH | HTTPS 成功／嘗試次數 | 首位元延遲 P50／P95 | 吞吐 | 重連次數 | 出口一致 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 運營商、Wi-Fi 或行動網路 | 候選代號、on/off | 實測填入 | 實測填入 | 實測填入 | 實測填入 | 是／否 |
+
+延遲與吞吐必須由中國端經實際代理測量；Mac 本地測試只證明出口段。
+故障驗收另在維護時段停用測試用 relay 或 Tunnel，確認真實 HTTPS 請求失敗且
+沒有改用其他出口，再恢復服務。`test-worker.sh` 的正常出口與內網隔離檢查
+本身不會執行這個中斷測試。
+
 ## UDP 的邊界
 
 - 目前家庭出口模式的公開 VLESS/WebSocket 設定以 TCP 可用性為優先，不宣告
@@ -75,6 +89,9 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
   Mac relay。錯誤宣告 UDP 常造成 DNS、HTTP/3 或影音應用看似連線但無資料。
 - 如需 UDP，必須分別測 DNS、QUIC 與一般 UDP，並確認封包確實由 Mac 出口；
   在測試完成前，讓客戶端回退 TCP 比提供假的 UDP 能力可靠。
+- 「由 Mac 出口」只涵蓋客戶端送入代理的受支援流量。驗收客戶端的 DNS、
+  IPv6、直連規則與斷線時行為；若目的為全流量出口，未支援的流量應明確阻擋，
+  不可讓客戶端默默改為直接連線。本 fork 的 relay 目前只允許公開 IPv4 目的地。
 
 ## 多地點出口
 
@@ -103,8 +120,12 @@ VLESS、WebSocket、Worker、Tunnel 與家庭出口路徑可用。驗收至少�
 
 ## KV、訂閱與外部依賴
 
-- VLESS WebSocket 資料連線在主路徑上不讀 KV。KV 主要提供訂閱、管理設定和
-  節點清單，因此代理流量大不會等比例增加 KV 成本。
+- 啟用出口站點管理後，每次 WebSocket／HTTP 新連線會讀取一次
+  `egress-sites.json`，連線中的每個資料 frame 不會再讀。估算 KV 成本時應計入
+  新連線與重連次數。讀取失敗或設定損壞時拒絕新連線，只有尚不存在管理記錄時
+  使用部署設定；不能因 KV 故障重新啟用已停用的站點。
+- KV 是最終一致儲存，停用變更並非即時全球撤銷。此版本沒有額外的應用層
+  設定快取，避免再延長舊設定存活時間；若日後加快取，先定義可接受的生效期限。
 - 一次本地訂閱生成會讀取少量設定鍵。保持 `OFF_LOG=true` 可避免每次訂閱或
   管理請求都寫入 KV 日誌，也減少保存來源 IP 與 User-Agent 的風險。
 - 優先使用 Worker 本地生成的 mixed subscription。第三方訂閱轉換服務會增加
@@ -143,7 +164,8 @@ curl -fsS http://127.0.0.1:<metrics-port>/metrics |
 1. `./deploy/macmini/status.sh`：確認 relay 與 cloudflared 正在運行。
 2. `./deploy/macmini/test-local.sh`：確認 relay 能從 Mac 正常直接出站。
 3. 確認 cloudflared 有四條 HA connection，且 private route 只有預期的 `/32`。
-4. `./deploy/macmini/test-worker.sh`：確認 Worker 經 VPC 到 Mac，並驗證 fail closed。
+4. `./deploy/macmini/test-worker.sh`：確認 Worker 經 VPC 到 Mac 與內網隔離；
+   另在維護時段執行上述中斷驗收，確認 fail closed。
 5. 更新 Shadowrocket 訂閱，再從上海測真實 HTTPS 和出口。
 6. 查看 Worker 的 request、CPU P50/P90、uncaught exception、client disconnect 和
    error rate。重連率高時先處理錯誤，不要先繼續增加節點。
@@ -170,6 +192,11 @@ curl -fsS http://127.0.0.1:<metrics-port>/metrics |
   可重建的清單，並定期驗證 Worker binding、secret 和 custom domain。
 
 ## Upstream 更新注意事項
+
+每日 workflow 只檢查上游新提交，不會直接 merge、reset 或 push `main`。
+更新應在獨立分支合併 `upstream/main`，保留本 fork 的出口設定，再透過 PR
+跑 Linux／macOS 的 `Tests` workflow。GitHub 分支保護是否將該檢查設為必要
+條件，仍需 repository owner 在 GitHub 設定。
 
 上游 edgetunnel 的預設假設包含公開 ProxyIP、SOCKS/HTTP fallback、第三方優選
 API 與多種協議。家庭出口 fork 的安全邊界不同，因此更新上游時要逐項確認：

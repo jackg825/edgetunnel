@@ -8,10 +8,14 @@ test('NAS relay resolves domains before rejecting private destinations', async (
 	const template = await readFile(new URL('sing-box.json.template', templateURL), 'utf8');
 	const config = JSON.parse(template.replace('__RELAY_PASSWORD__', 'a'.repeat(64)));
 	assert.deepEqual(config.dns.servers, [{ type: 'local', tag: 'local' }]);
+	assert.equal(config.dns.strategy, 'ipv4_only');
 	const resolveRule = config.route.rules.findIndex(rule => rule.action === 'resolve');
+	const ipv6RejectRule = config.route.rules.findIndex(rule => rule.action === 'reject' && rule.ip_cidr?.includes('::/0'));
 	const privateRule = config.route.rules.findIndex(rule => rule.ip_is_private === true);
-	const reservedRule = config.route.rules.findIndex(rule => Array.isArray(rule.ip_cidr));
+	const reservedRule = config.route.rules.findIndex(rule => rule.ip_cidr?.includes('0.0.0.0/8'));
 	assert.ok(resolveRule >= 0);
+	assert.equal(config.route.rules[resolveRule].strategy, 'ipv4_only');
+	assert.ok(resolveRule < ipv6RejectRule);
 	assert.ok(resolveRule < privateRule);
 	assert.ok(resolveRule < reservedRule);
 	assert.equal(config.route.auto_detect_interface, false);

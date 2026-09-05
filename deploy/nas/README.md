@@ -125,6 +125,10 @@ docker compose -f deploy/nas/runtime/compose.yaml logs --tail=100
 - sing-box relay 沒有 TUN inbound，因此明確停用 `auto_detect_interface`，讓 Linux
   依 container routing table 選擇出口；不要為了啟用介面綁定而增加 container
   capabilities。
+- 這個 Docker bridge 只佈建 IPv4，relay 因此以 `ipv4_only` 解析 domain，並立即
+  拒絕客戶端直接送入的 IPv6 位址，避免在沒有 IPv6 route 的 container 內重複
+  撥號與等待失敗。若未來要啟用 IPv6，必須同時佈建 Docker IPv6 network、
+  NAS/ISP IPv6 route 與對應的 private-destination 防護，不可只移除此限制。
 - relay 沒有 host/LAN port。Container 使用 read-only filesystem、drop all
   capabilities 與 `no-new-privileges`；沒有掛載 Docker socket、`cert.pem`、Cloudflare
   credentials directory 或 NAS 資料目錄。

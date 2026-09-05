@@ -1,6 +1,7 @@
 {
   "tunnel": "replace-during-install",
   "credentials-file": "replace-during-install",
+  "metrics": "127.0.0.1:19094",
   "warp-routing": {
     "enabled": true
   }

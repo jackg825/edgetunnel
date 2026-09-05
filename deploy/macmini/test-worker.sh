@@ -25,14 +25,24 @@ fi
 WORKER_UUID="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w)"
 CLIENT_CONFIG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-worker-client.XXXXXX")"
 CLIENT_LOG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-worker-client-log.XXXXXX")"
+PROBE_LOG="$(mktemp "${TMPDIR:-/tmp}/edgetunnel-worker-probe-log.XXXXXX")"
 CLIENT_PID=''
+PROBE_PID=''
+PROBE_PORT="${HOME_EGRESS_ISOLATION_TEST_PORT:-19095}"
+LAN_PROBE_PORT="${HOME_EGRESS_LAN_ISOLATION_TEST_PORT:-19096}"
+DEFAULT_INTERFACE="$(route -n get default | awk '/interface:/{print $2; exit}')"
+LAN_ADDRESS="${HOME_EGRESS_LAN_TEST_ADDRESS:-$(ipconfig getifaddr "$DEFAULT_INTERFACE")}"
 
 cleanup() {
+	if [ -n "$PROBE_PID" ]; then
+		kill "$PROBE_PID" >/dev/null 2>&1 || true
+		wait "$PROBE_PID" >/dev/null 2>&1 || true
+	fi
 	if [ -n "$CLIENT_PID" ]; then
 		kill "$CLIENT_PID" >/dev/null 2>&1 || true
 		wait "$CLIENT_PID" >/dev/null 2>&1 || true
 	fi
-	rm -f "$CLIENT_CONFIG" "$CLIENT_LOG"
+	rm -f "$CLIENT_CONFIG" "$CLIENT_LOG" "$PROBE_LOG"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -62,9 +72,9 @@ sing-box run -c "$CLIENT_CONFIG" > "$CLIENT_LOG" 2>&1 &
 CLIENT_PID=$!
 
 attempt=0
-while ! lsof -nP -iTCP:"$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+while ! lsof -nP -a -p "$CLIENT_PID" "-iTCP@127.0.0.1:$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 50 ]; then
+	if ! kill -0 "$CLIENT_PID" 2>/dev/null || [ "$attempt" -ge 50 ]; then
 		printf '%s\n' "Worker test client did not start" >&2
 		cat "$CLIENT_LOG" >&2
 		exit 1
@@ -72,8 +82,39 @@ while ! lsof -nP -iTCP:"$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	sleep 0.1
 done
 
-DIRECT_TRACE="$(curl --silent --show-error --max-time 15 https://www.cloudflare.com/cdn-cgi/trace)"
-WORKER_TRACE="$(curl --silent --show-error --max-time 20 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
+node -e '
+	const http = require("node:http");
+	const loopbackPort = Number(process.argv[1]);
+	const lanAddress = process.argv[2];
+	const lanPort = Number(process.argv[3]);
+	const handler = (request, response) => {
+		response.writeHead(200, { "Content-Type": "text/plain" });
+		response.end("local-only\n");
+	};
+	const servers = [
+		http.createServer(handler).listen(loopbackPort, "127.0.0.1"),
+		http.createServer(handler).listen(lanPort, lanAddress)
+	];
+	process.on("SIGTERM", () => Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))).then(() => process.exit(0)));
+' "$PROBE_PORT" "$LAN_ADDRESS" "$LAN_PROBE_PORT" > "$PROBE_LOG" 2>&1 &
+PROBE_PID=$!
+
+attempt=0
+while ! lsof -nP -a -p "$PROBE_PID" "-iTCP@127.0.0.1:$PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1 || ! lsof -nP -a -p "$PROBE_PID" "-iTCP@$LAN_ADDRESS:$LAN_PROBE_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+	attempt=$((attempt + 1))
+	if ! kill -0 "$PROBE_PID" 2>/dev/null || [ "$attempt" -ge 50 ]; then
+		printf '%s\n' "Local isolation probe did not start" >&2
+		cat "$PROBE_LOG" >&2
+		exit 1
+	fi
+	sleep 0.1
+done
+
+curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://127.0.0.1:$PROBE_PORT/" >/dev/null
+curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://$LAN_ADDRESS:$LAN_PROBE_PORT/" >/dev/null
+
+DIRECT_TRACE="$(curl --ipv4 --noproxy '*' --silent --show-error --max-time 15 https://www.cloudflare.com/cdn-cgi/trace)"
+WORKER_TRACE="$(curl --noproxy '' --silent --show-error --max-time 20 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
 DIRECT_IP="$(printf '%s\n' "$DIRECT_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 WORKER_IP="$(printf '%s\n' "$WORKER_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 WORKER_LOCATION="$(printf '%s\n' "$WORKER_TRACE" | awk -F= '$1 == "loc" { print $2 }')"
@@ -84,4 +125,20 @@ if [ -z "$DIRECT_IP" ] || [ "$DIRECT_IP" != "$WORKER_IP" ]; then
 	exit 1
 fi
 
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://127.0.0.1:$PROBE_PORT/"; then
+	printf '%s\n' "Worker egress reached a loopback-only service" >&2
+	exit 1
+fi
+
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://localhost:$PROBE_PORT/"; then
+	printf '%s\n' "Worker egress reached a local service through a hostname" >&2
+	exit 1
+fi
+
+if curl --noproxy '' --silent --max-time 3 --output /dev/null --proxy "socks5h://127.0.0.1:$CLIENT_PORT" "http://$LAN_ADDRESS:$LAN_PROBE_PORT/"; then
+	printf '%s\n' "Worker egress reached a LAN-bound service" >&2
+	exit 1
+fi
+
 printf 'VLESS Worker-to-Mac TCP egress test passed; egress location=%s\n' "$WORKER_LOCATION"
+printf '%s\n' "Loopback IP, hostname, and LAN isolation tests passed"

@@ -40,9 +40,9 @@ sing-box run -c "$CLIENT_CONFIG" > "$CLIENT_LOG" 2>&1 &
 CLIENT_PID=$!
 
 attempt=0
-while ! lsof -nP -iTCP:"$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+while ! lsof -nP -a -p "$CLIENT_PID" "-iTCP@127.0.0.1:$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 50 ]; then
+	if ! kill -0 "$CLIENT_PID" 2>/dev/null || [ "$attempt" -ge 50 ]; then
 		printf '%s\n' "Local test client did not start" >&2
 		cat "$CLIENT_LOG" >&2
 		exit 1
@@ -50,8 +50,8 @@ while ! lsof -nP -iTCP:"$CLIENT_PORT" -sTCP:LISTEN >/dev/null 2>&1; do
 	sleep 0.1
 done
 
-DIRECT_TRACE="$(curl --silent --show-error --max-time 10 https://www.cloudflare.com/cdn-cgi/trace)"
-RELAY_TRACE="$(curl --silent --show-error --max-time 10 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
+DIRECT_TRACE="$(curl --ipv4 --noproxy '*' --silent --show-error --max-time 10 https://www.cloudflare.com/cdn-cgi/trace)"
+RELAY_TRACE="$(curl --noproxy '' --silent --show-error --max-time 10 --proxy "socks5h://127.0.0.1:$CLIENT_PORT" https://www.cloudflare.com/cdn-cgi/trace)"
 node "$SCRIPT_DIR/socks-udp-dns.mjs" "$CLIENT_PORT"
 DIRECT_IP="$(printf '%s\n' "$DIRECT_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 RELAY_IP="$(printf '%s\n' "$RELAY_TRACE" | awk -F= '$1 == "ip" { print $2 }')"
@@ -62,4 +62,4 @@ if [ -z "$DIRECT_IP" ] || [ "$DIRECT_IP" != "$RELAY_IP" ]; then
 	exit 1
 fi
 
-printf 'Local Trojan relay test passed; egress location=%s\n' "$RELAY_LOCATION"
+printf 'Local loopback Trojan relay test passed; egress location=%s\n' "$RELAY_LOCATION"
