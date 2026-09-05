@@ -237,7 +237,9 @@ export default {
 			const 出口配置 = await 读取有效出口站点配置(env);
 			const 反代上下文 = 应用家庭出口配置(await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底), env, url, userID, 出口配置);
 			const { 头: 本机Padding头, 键: 本机Padding键 } = 获取叉HTTPPadding标识(userID);
-			const 命中叉HTTP特征 = !!request.headers.get(本机Padding头) || !!url.searchParams.get(本机Padding键);
+			const referer = request.headers.get('Referer') || '';
+			const 命中叉HTTP特征 = !!request.headers.get(本机Padding头) || !!url.searchParams.get(本机Padding键)
+				|| referer.includes('x_padding', 14) || referer.includes('x_padding=');
 			if (!命中叉HTTP特征 && contentType.startsWith('application/grpc')) {
 				log(`[gRPC] 命中请求: ${url.pathname}${url.search}`);
 				return await 处理gRPC请求(request, userID, 反代上下文);
@@ -879,17 +881,14 @@ async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}) {
 		};
 		abortController.signal.addEventListener('abort', 取消上行reader, { once: true });
 		try {
-			try {
-				while (true) {
-					const { done, value } = await 上行reader.read();
-					if (done) break;
-					if (value?.byteLength) await 上行合包器.写入(value);
-				}
-			} finally {
-				abortController.signal.removeEventListener('abort', 取消上行reader);
-				try { 上行reader.releaseLock() } catch (e) { }
+			while (true) {
+				const { done, value } = await 上行reader.read();
+				if (done) break;
+				if (value?.byteLength) await 上行合包器.写入(value);
 			}
 		} finally {
+			abortController.signal.removeEventListener('abort', 取消上行reader);
+			try { 上行reader.releaseLock() } catch (e) { }
 			try { await 上行合包器.结束() } catch (e) { }
 		}
 		await 搬运Promise;
@@ -5636,13 +5635,13 @@ function Surge订阅配置文件热补丁(content, url, config_JSON, 出口站�
 			if (站点ID && !已启用出口ID.has(站点ID)) throw new Error(`Surge 节点包含未启用的出口站点: ${站点ID}`);
 			if (!站点ID && 出口站点列表.length > 1) throw new Error('Surge 转换结果丢失出口站点选择器，无法安全恢复多站点订阅；请使用保留 ws-path 的转换后端');
 			const 节点路径 = 站点ID ? 原始路径 : 附加出口站点到路径(原始路径 || 完整节点路径, 出口站点列表[0]);
-			if (路径匹配) {
-				if (!站点ID) x = x.replace(路径匹配[0], `, ws-path=${节点路径.replace(/,/g, '%2C')}`);
-			} else {
+			if (!路径匹配) {
 				const host = /(?:^|,)\s*sni\s*=\s*([^,]+)/i.exec(x)?.[1].trim();
 				if (!host) throw new Error('Surge 节点缺少 sni，无法恢复 WebSocket 传输');
 				x += `, ws-path=${节点路径.replace(/,/g, '%2C')}`;
 				if (!/(?:^|,)\s*ws-headers\s*=/i.test(x)) x += `, ws-headers=Host:"${host}"`;
+			} else if (!站点ID) {
+				x = x.replace(路径匹配[0], `, ws-path=${节点路径.replace(/,/g, '%2C')}`);
 			}
 			if (/(?:^|,)\s*ws\s*=/i.test(x)) x = x.replace(/((?:^|,)\s*ws\s*=)\s*[^,]*/i, '$1true');
 			else x += ', ws=true';
@@ -5651,10 +5650,9 @@ function Surge订阅配置文件热补丁(content, url, config_JSON, 出口站�
 			const host = x.split("sni=")[1].split(",")[0];
 			const 备改内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}`;
 			const 正确内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}, ws=true, ws-path=${完整节点路径.replace(/,/g, '%2C')}, ws-headers=Host:"${host}"`;
-			输出内容 += x.replace(new RegExp(备改内容, 'g'), 正确内容).replace("[", "").replace("]", "") + '\n';
-		} else {
-			输出内容 += x + '\n';
+			x = x.replace(new RegExp(备改内容, 'g'), 正确内容).replace("[", "").replace("]", "");
 		}
+		输出内容 += x + '\n';
 	}
 
 	输出内容 = `#!MANAGED-CONFIG ${url} interval=${config_JSON.优选订阅生成.SUBUpdateTime * 60 * 60} strict=false` + 输出内容.substring(输出内容.indexOf('\n'));
